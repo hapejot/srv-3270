@@ -1,9 +1,18 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 mod datastream;
 use datastream::*;
+
+pub use datastream::{
+    Attribute, Color, Command, DataStream, FieldAttribute, Highlight, Order, Wcc,
+};
+
 // =======================================================================
 // Typisiertes Modell des 3270-Datenstroms
 //
@@ -15,8 +24,49 @@ use datastream::*;
 // Konfigurationsdatei laden.
 // =======================================================================
 #[derive(Debug)]
-pub struct Screen {
+pub struct ScreenInfo {
     width: u16,
+}
+
+pub trait ScreenTrait: Sync + Send {
+    fn data_stream(&self) -> DataStream;
+}
+
+#[derive(Clone)]
+pub struct Screens {
+    screens: Arc<Mutex<HashMap<String, Box<dyn ScreenTrait>>>>,
+}
+
+impl Screens {
+    pub fn new() -> Self {
+        let screens = Arc::new(Mutex::new(HashMap::new()));
+        Self { screens }
+    }
+
+    pub fn add(&mut self, key: impl Into<String>, screen: Box<dyn ScreenTrait + Sync + Send>) {
+        let mut screens = self.screens.try_lock().unwrap();
+        screens.insert(key.into(), screen);
+    }
+}
+
+pub struct Context {
+    values: serde_json::Map<String, Value>,
+}
+
+impl Context {
+    pub fn new() -> Self {
+        let values = serde_json::Map::new();
+        Self { values }
+    }
+
+    pub fn set(&mut self, key: impl Into<String>, value: impl Into<Value>) {
+        self.values.insert(key.into(), value.into());
+    }
+
+    pub fn get(&mut self, key: impl Into<String>) -> Option<Value> {
+        let k: String = key.into();
+        self.values.get(&k).cloned()
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -285,7 +335,7 @@ async fn read_terminal_type(stream: &mut TcpStream) -> anyhow::Result<String> {
     }
 }
 
-async fn negotiate_telnet(stream: &mut TcpStream) -> anyhow::Result<Screen> {
+async fn negotiate_telnet(stream: &mut TcpStream) -> anyhow::Result<ScreenInfo> {
     // Send DO TERMINAL_TYPE and ask the client to send it.
     stream.write_all(&[IAC, DO, TERMINAL_TYPE]).await?;
     expect_response(stream, WILL, TERMINAL_TYPE).await?;
@@ -309,7 +359,7 @@ async fn negotiate_telnet(stream: &mut TcpStream) -> anyhow::Result<Screen> {
 
     let (rows, cols) = dimensions_for(&term);
     println!("rows: {rows} / cols: {cols} / term: {term}");
-    Ok(Screen { width: cols })
+    Ok(ScreenInfo { width: cols })
 }
 
 async fn send_3270_record(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
@@ -439,7 +489,12 @@ fn structured_field_to_bytes(flds: Vec<StructuredField>) -> anyhow::Result<Vec<u
 // ---------------------------------------------------------------------
 // Verbindung behandeln
 // ---------------------------------------------------------------------
-async fn handle_client(mut stream: TcpStream) -> anyhow::Result<()> {
+
+pub async fn handle_client(
+    mut stream: TcpStream,
+    screens: &Screens,
+    context: &mut Context,
+) -> anyhow::Result<()> {
     println!("Neue Verbindung von {:?}", stream.peer_addr());
     let mut term = negotiate_telnet(&mut stream).await?;
     for sf in query_client(&mut stream).await? {
@@ -536,26 +591,26 @@ fn parse_structured_fields(buf: &[u8]) -> Vec<StructuredField> {
     r
 }
 
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
-    // Kurze Demonstration: der Login-Screen als JSON -- zeigt, dass
-    // DataStream/Order jetzt eine vollstaendig beschreibbare (und damit
-    // auch loggbare/testbare) Struktur sind statt roher Bytes.
-    // let demo = login_screen(80, "", None);
-    // println!(
-    //     "Beispiel-Datenstrom als JSON:\n{}\n",
-    //     serde_json::to_string_pretty(&demo).unwrap()
-    // );
+// #[tokio::main]
+// async fn main() -> std::io::Result<()> {
+//     // Kurze Demonstration: der Login-Screen als JSON -- zeigt, dass
+//     // DataStream/Order jetzt eine vollstaendig beschreibbare (und damit
+//     // auch loggbare/testbare) Struktur sind statt roher Bytes.
+//     // let demo = login_screen(80, "", None);
+//     // println!(
+//     //     "Beispiel-Datenstrom als JSON:\n{}\n",
+//     //     serde_json::to_string_pretty(&demo).unwrap()
+//     // );
 
-    let listener = TcpListener::bind("0.0.0.0:3270").await?;
-    println!("TN3270-Demo-Server laeuft auf Port 3270 ...");
+//     let listener = TcpListener::bind("0.0.0.0:3270").await?;
+//     println!("TN3270-Demo-Server laeuft auf Port 3270 ...");
 
-    loop {
-        let (stream, _) = listener.accept().await?;
-        tokio::spawn(async move {
-            if let Err(e) = handle_client(stream).await {
-                eprintln!("Fehler bei Verbindung: {e}");
-            }
-        });
-    }
-}
+//     loop {
+//         let (stream, _) = listener.accept().await?;
+//         tokio::spawn(async move {
+//             if let Err(e) = handle_client(stream).await {
+//                 eprintln!("Fehler bei Verbindung: {e}");
+//             }
+//         });
+//     }
+// }
