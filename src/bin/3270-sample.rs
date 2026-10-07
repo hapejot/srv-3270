@@ -7,6 +7,69 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 // ---------------------------------------------------------------------
+
+struct LoginScreen {}
+
+impl ScreenTrait for LoginScreen {
+    fn data_stream(&self, ctx: &Context) -> DataStream {
+        let name = ctx
+            .get("6x21")
+            .map(|x| x.as_str().unwrap().to_string())
+            .unwrap_or(String::new());
+        DataStream {
+            command: Command::EraseWriteAlternate,
+            wcc: Wcc::UnlockKeyboardResetMdt,
+            width: 80,
+            orders: vec![
+                Order::SetBufferAddress { row: 1, col: 1 },
+                Order::StartField(FieldAttribute::normal().unprotected().modified()),
+                Order::InsertCursor,
+                Order::SetAttribute(Attribute::Highlighting(Highlight::Underscore)),
+                Order::Nulls(4),
+                Order::StartField(FieldAttribute::protected_intensified()),
+                Order::SetAttribute(Attribute::Foreground(Color::NeutralWhite)),
+                Order::RepeatToAddress {
+                    row: 1,
+                    col: 18,
+                    fill: ' ',
+                },
+                Order::Text("INTERACTIVE MONITORING PROGRAM FOR MVS/370".into()),
+                // -- Menuepunkt "A - ADDRESS SPACE MONITOR" --
+                Order::SetBufferAddress { row: 3, col: 5 },
+                Order::StartField(FieldAttribute::protected_intensified()),
+                Order::SetAttribute(Attribute::Foreground(Color::Yellow)),
+                Order::Text("A".into()),
+                Order::StartField(FieldAttribute::protected_detectable()),
+                Order::SetAttribute(Attribute::Foreground(Color::Turquoise)),
+                Order::Text("-".into()),
+                Order::StartField(FieldAttribute::protected_intensified()),
+                Order::SetAttribute(Attribute::Foreground(Color::Pink)),
+                Order::Text("ADDRESS SPACE".into()),
+                Order::SetBufferAddress { row: 6, col: 5 },
+                Order::StartField(FieldAttribute::normal()),
+                Order::Text("Benutzer:".into()),
+                Order::SetBufferAddress { row: 6, col: 20 },
+                Order::StartField(FieldAttribute::normal().unprotected().modified()),
+                Order::Text(name.clone()),
+                Order::Nulls(20 - name.len()),
+                Order::StartField(FieldAttribute::normal()),
+                Order::Text(format!("user name here")),
+                Order::SetBufferAddress { row: 8, col: 5 },
+                Order::StartField(FieldAttribute::normal()),
+                Order::Text("Passwort:".into()),
+                Order::SetBufferAddress { row: 8, col: 20 },
+                Order::StartField(FieldAttribute::unprotected_hidden()),
+                Order::Nulls(20),
+                Order::StartField(FieldAttribute::normal()),
+                Order::SetBufferAddress { row: 22, col: 5 },
+                Order::StartField(FieldAttribute::normal()),
+                Order::Text(format!("hint text here")),
+                // Order::SetBufferAddress { row: 6, col: 21 },
+                // Order::InsertCursor,
+            ],
+        }
+    }
+}
 fn login_screen(width: u16, username_prefill: &str, error: Option<&str>) -> DataStream {
     let hint = error
         .unwrap_or("Enter=Anmelden  Clear/PF3=Abbrechen")
@@ -42,22 +105,22 @@ fn login_screen(width: u16, username_prefill: &str, error: Option<&str>) -> Data
             Order::SetAttribute(Attribute::Foreground(Color::Pink)),
             Order::Text("ADDRESS SPACE".into()),
             Order::SetBufferAddress { row: 6, col: 5 },
-            Order::StartField(FieldAttribute::protected_normal()),
+            Order::StartField(FieldAttribute::normal()),
             Order::Text("Benutzer:".into()),
             Order::SetBufferAddress { row: 6, col: 20 },
             Order::StartField(FieldAttribute::unprotected_normal()),
             Order::Nulls(20),
-            Order::StartField(FieldAttribute::protected_normal()),
+            Order::StartField(FieldAttribute::normal()),
             Order::Text(username_prefill.to_string()),
             Order::SetBufferAddress { row: 8, col: 5 },
-            Order::StartField(FieldAttribute::protected_normal()),
+            Order::StartField(FieldAttribute::normal()),
             Order::Text("Passwort:".into()),
             Order::SetBufferAddress { row: 8, col: 20 },
             Order::StartField(FieldAttribute::unprotected_hidden()),
             Order::Nulls(20),
-            Order::StartField(FieldAttribute::protected_normal()),
+            Order::StartField(FieldAttribute::normal()),
             Order::SetBufferAddress { row: 22, col: 5 },
-            Order::StartField(FieldAttribute::protected_normal()),
+            Order::StartField(FieldAttribute::normal()),
             Order::Text(hint),
             // Order::SetBufferAddress { row: 6, col: 21 },
             // Order::InsertCursor,
@@ -72,7 +135,7 @@ fn result_screen(width: u16, username: &str) -> DataStream {
         width,
         orders: vec![
             Order::SetBufferAddress { row: 2, col: 5 },
-            Order::StartField(FieldAttribute::protected_normal()),
+            Order::StartField(FieldAttribute::normal()),
             Order::Text(format!("Hallo {}, Login empfangen.", username)),
         ],
     }
@@ -100,8 +163,8 @@ async fn main() -> std::io::Result<()> {
     let listener = TcpListener::bind("0.0.0.0:3270").await?;
     println!("TN3270-Demo-Server laeuft auf Port 3270 ...");
 
-    let screens = Screens::new();
-
+    let mut screens = Screens::new();
+    screens.add("start", Box::new(LoginScreen {}));
     loop {
         let (stream, _) = listener.accept().await?;
         let screens = screens.clone();

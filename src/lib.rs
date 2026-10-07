@@ -29,7 +29,7 @@ pub struct ScreenInfo {
 }
 
 pub trait ScreenTrait: Sync + Send {
-    fn data_stream(&self) -> DataStream;
+    fn data_stream(&self, ctx: &Context) -> DataStream;
 }
 
 #[derive(Clone)]
@@ -43,9 +43,24 @@ impl Screens {
         Self { screens }
     }
 
-    pub fn add(&mut self, key: impl Into<String>, screen: Box<dyn ScreenTrait + Sync + Send>) {
+    pub fn add(&mut self, key: impl Into<String>, screen: Box<dyn ScreenTrait>) {
         let mut screens = self.screens.try_lock().unwrap();
         screens.insert(key.into(), screen);
+    }
+
+    fn data_stream(&self, screen_name: &str, ctx: &Context) -> DataStream {
+        let screens = self.screens.try_lock().unwrap();
+        if let Some(s) = screens.get(screen_name) {
+            s.data_stream(ctx)
+        } else {
+            println!("{} undefined screen", screen_name);
+            DataStream {
+                command: Command::EraseWrite,
+                wcc: Wcc::UnlockKeyboardResetMdt,
+                width: 80,
+                orders: vec![],
+            }
+        }
     }
 }
 
@@ -63,10 +78,12 @@ impl Context {
         self.values.insert(key.into(), value.into());
     }
 
-    pub fn get(&mut self, key: impl Into<String>) -> Option<Value> {
+    pub fn get(&self, key: impl Into<String>) -> Option<Value> {
         let k: String = key.into();
         self.values.get(&k).cloned()
     }
+
+    fn set_message(&self, format: String) {}
 }
 
 // ---------------------------------------------------------------------
@@ -96,29 +113,6 @@ fn encode_address(addr: u16) -> [u8; 2] {
 // diese Demo; fuer echte Projekte lieber eine vollstaendige Codepage-Crate
 // (z.B. `ebcdic` oder `copybook-charset`) einbinden.
 // ---------------------------------------------------------------------
-fn ascii_to_ebcdic(s: &str) -> Vec<u8> {
-    s.bytes().map(ascii_byte_to_ebcdic).collect()
-}
-
-fn ascii_byte_to_ebcdic(b: u8) -> u8 {
-    match b {
-        b' ' => 0x40,
-        b'A'..=b'I' => 0xC1 + (b - b'A'),
-        b'J'..=b'R' => 0xD1 + (b - b'J'),
-        b'S'..=b'Z' => 0xE2 + (b - b'S'),
-        b'a'..=b'i' => 0x81 + (b - b'a'),
-        b'j'..=b'r' => 0x91 + (b - b'j'),
-        b's'..=b'z' => 0xA2 + (b - b's'),
-        b'0'..=b'9' => 0xF0 + (b - b'0'),
-        b':' => 0x7A,
-        b'.' => 0x4B,
-        b',' => 0x6B,
-        b'-' => 0x60,
-        b'!' => 0x5A,
-        b'?' => 0x6F,
-        _ => 0x40,
-    }
-}
 
 fn ebcdic_to_ascii(b: u8) -> u8 {
     match b {
@@ -176,22 +170,22 @@ fn login_screen(width: u16, username_prefill: &str, error: Option<&str>) -> Data
             Order::SetAttribute(Attribute::Foreground(Color::Pink)),
             Order::Text("ADDRESS SPACE".into()),
             Order::SetBufferAddress { row: 6, col: 5 },
-            Order::StartField(FieldAttribute::protected_normal()),
+            Order::StartField(FieldAttribute::normal()),
             Order::Text("Benutzer:".into()),
             Order::SetBufferAddress { row: 6, col: 20 },
             Order::StartField(FieldAttribute::unprotected_normal()),
             Order::Nulls(20),
-            Order::StartField(FieldAttribute::protected_normal()),
+            Order::StartField(FieldAttribute::normal()),
             Order::Text(username_prefill.to_string()),
             Order::SetBufferAddress { row: 8, col: 5 },
-            Order::StartField(FieldAttribute::protected_normal()),
+            Order::StartField(FieldAttribute::normal()),
             Order::Text("Passwort:".into()),
             Order::SetBufferAddress { row: 8, col: 20 },
             Order::StartField(FieldAttribute::unprotected_hidden()),
             Order::Nulls(20),
-            Order::StartField(FieldAttribute::protected_normal()),
+            Order::StartField(FieldAttribute::normal()),
             Order::SetBufferAddress { row: 22, col: 5 },
-            Order::StartField(FieldAttribute::protected_normal()),
+            Order::StartField(FieldAttribute::normal()),
             Order::Text(hint),
             // Order::SetBufferAddress { row: 6, col: 21 },
             // Order::InsertCursor,
@@ -206,7 +200,7 @@ fn result_screen(width: u16, username: &str) -> DataStream {
         width,
         orders: vec![
             Order::SetBufferAddress { row: 2, col: 5 },
-            Order::StartField(FieldAttribute::protected_normal()),
+            Order::StartField(FieldAttribute::normal()),
             Order::Text(format!("Hallo {}, Login empfangen.", username)),
         ],
     }
@@ -504,15 +498,12 @@ pub async fn handle_client(
             } => term.width = alternate_width,
         }
     }
-    // dump_bytes(&response);
 
-    let mut username_prefill = String::new();
-    let mut error: Option<String> = None;
-
+    let next_screen = "start";
     loop {
-        let screen = login_screen(term.width, &username_prefill, error.as_deref());
+        let mut screen = screens.data_stream(next_screen, &context);
+        screen.width = term.width;
         send_3270_record(&mut stream, &screen.to_bytes()).await?;
-
         let response = read_3270_record(&mut stream).await?;
 
         match parse_response(term.width, &response) {
@@ -529,18 +520,16 @@ pub async fn handle_client(
                 // }
                 for (r, c, t) in fields {
                     println!("{r} {c} '{t}'");
+                    context.set(format!("{r}x{c}"), t);
                 }
-
-                send_3270_record(&mut stream, &result_screen(term.width, "user").to_bytes())
-                    .await?;
-                break;
             }
             Some(ClientEvent::Exit) => {
                 println!("Verbindung durch Client abgebrochen (Clear/PF3).");
                 break;
             }
             None => {
-                error = Some("Unerwartete Eingabe, bitte erneut versuchen.".to_string());
+                // error = Some("Unerwartete Eingabe, bitte erneut versuchen.".to_string());
+                context.set_message(format!("Unerwartete Eingabe"));
                 continue;
             }
         }

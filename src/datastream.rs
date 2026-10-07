@@ -19,6 +19,8 @@ pub enum Command {
     /// Wie EraseWrite, aber auf die zuvor per Read-Partition-Query
     /// ermittelte Alternate-Groesse (0x7E)
     EraseWriteAlternate,
+
+    Write,
 }
 
 impl Command {
@@ -26,6 +28,7 @@ impl Command {
         match self {
             Command::EraseWrite => 0xF5,
             Command::EraseWriteAlternate => 0x7E,
+            Command::Write => 0xF1,
         }
     }
 }
@@ -72,38 +75,53 @@ pub enum Display {
 pub struct FieldAttribute {
     pub protection: Protection,
     pub display: Display,
+    pub modified: bool,
 }
 
 impl FieldAttribute {
-    pub const fn protected_normal() -> Self {
-        FieldAttribute {
-            protection: Protection::Protected,
-            display: Display::Normal,
-        }
-    }
     pub const fn protected_detectable() -> Self {
         FieldAttribute {
             protection: Protection::Protected,
             display: Display::Detectable,
+            modified: false,
         }
     }
     pub const fn protected_intensified() -> Self {
         FieldAttribute {
             protection: Protection::Protected,
             display: Display::Intensified,
+            modified: false,
         }
     }
     pub const fn unprotected_normal() -> Self {
         FieldAttribute {
             protection: Protection::Unprotected,
             display: Display::Normal,
+            modified: false,
         }
     }
     pub const fn unprotected_hidden() -> Self {
         FieldAttribute {
             protection: Protection::Unprotected,
             display: Display::NonDisplay,
+            modified: false,
         }
+    }
+
+    pub const fn normal() -> Self {
+        FieldAttribute {
+            protection: Protection::Protected,
+            display: Display::Normal,
+            modified: false,
+        }
+    }
+    pub const fn unprotected(mut self) -> Self {
+        self.protection = Protection::Unprotected;
+        self
+    }
+    pub const fn modified(mut self) -> Self {
+        self.modified = true;
+        self
     }
 
     fn to_byte(self) -> u8 {
@@ -117,6 +135,9 @@ impl FieldAttribute {
             Display::Intensified => 0x08,
             Display::NonDisplay => 0x0C,
         };
+        if self.modified {
+            b |= 0x01;
+        }
         b
     }
 }
@@ -453,53 +474,28 @@ pub fn parse_implicit_partition_reply(data: &[u8]) -> Option<(u16, u16)> {
 }
 
 // ---------------------------------------------------------------------
-// Sehr reduzierte EBCDIC-Konvertierung (CP037-Grundzeichen). Reicht fuer
-// diese Demo; fuer echte Projekte lieber eine vollstaendige Codepage-Crate
-// (z.B. `ebcdic` oder `copybook-charset`) einbinden. pub, da aufrufender
-// Code (z.B. das Parsen der Inbound-Feldwerte) sie ebenfalls braucht.
-// ---------------------------------------------------------------------
 pub fn ascii_to_ebcdic(s: &str) -> Vec<u8> {
-    s.bytes().map(ascii_byte_to_ebcdic).collect()
+    // s.bytes().map(ascii_byte_to_ebcdic).collect()
+    let b = s.bytes().collect::<Vec<_>>();
+    let n = b.len();
+    let mut r = Vec::with_capacity(n);
+    r.resize(n, 0);
+    ebcdic::ebcdic::Ebcdic::ascii_to_ebcdic(&b, r.as_mut_slice(), n, true);
+    r
 }
 
 fn ascii_byte_to_ebcdic(b: u8) -> u8 {
-    match b {
-        b' ' => 0x40,
-        b'A'..=b'I' => 0xC1 + (b - b'A'),
-        b'J'..=b'R' => 0xD1 + (b - b'J'),
-        b'S'..=b'Z' => 0xE2 + (b - b'S'),
-        b'a'..=b'i' => 0x81 + (b - b'a'),
-        b'j'..=b'r' => 0x91 + (b - b'j'),
-        b's'..=b'z' => 0xA2 + (b - b's'),
-        b'0'..=b'9' => 0xF0 + (b - b'0'),
-        b':' => 0x7A,
-        b'.' => 0x4B,
-        b',' => 0x6B,
-        b'-' => 0x60,
-        b'!' => 0x5A,
-        b'?' => 0x6F,
-        _ => 0x40,
-    }
+    let buf = [b];
+    let mut r = [0u8];
+    ebcdic::ebcdic::Ebcdic::ascii_to_ebcdic(&buf, &mut r, 1, true);
+    r[0]
 }
 
 pub fn ebcdic_to_ascii(b: u8) -> u8 {
-    match b {
-        0x40 => b' ',
-        0xC1..=0xC9 => b'A' + (b - 0xC1),
-        0xD1..=0xD9 => b'J' + (b - 0xD1),
-        0xE2..=0xE9 => b'S' + (b - 0xE2),
-        0x81..=0x89 => b'a' + (b - 0x81),
-        0x91..=0x99 => b'j' + (b - 0x91),
-        0xA2..=0xA9 => b's' + (b - 0xA2),
-        0xF0..=0xF9 => b'0' + (b - 0xF0),
-        0x7A => b':',
-        0x4B => b'.',
-        0x6B => b',',
-        0x60 => b'-',
-        0x5A => b'!',
-        0x6F => b'?',
-        _ => b' ',
-    }
+    let buf = [b];
+    let mut r = [0u8];
+    ebcdic::ebcdic::Ebcdic::ebcdic_to_ascii(&buf, &mut r, 1, true, true);
+    r[0]
 }
 
 #[cfg(test)]
@@ -517,7 +513,7 @@ mod tests {
             width: 80,
             orders: vec![
                 Order::SetBufferAddress { row: 1, col: 1 },
-                Order::StartField(FieldAttribute::protected_normal()),
+                Order::StartField(FieldAttribute::normal()),
                 Order::InsertCursor,
                 Order::SetAttribute(Attribute::Highlighting(Highlight::Underscore)),
                 Order::Nulls(4),
