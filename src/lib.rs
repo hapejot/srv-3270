@@ -11,6 +11,7 @@ use datastream::*;
 
 pub use datastream::{
     Attribute, Color, Command, DataStream, FieldAttribute, Highlight, Order, Wcc,
+    build_read_partition_query_implicit_partition, parse_implicit_partition_reply,
 };
 
 // =======================================================================

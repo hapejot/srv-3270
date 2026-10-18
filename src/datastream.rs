@@ -131,6 +131,8 @@ pub enum Display {
 pub struct FieldAttribute {
     pub protection: Protection,
     pub display: Display,
+    #[serde(default)]
+    pub numeric: bool,
     pub modified: bool,
 }
 
@@ -139,6 +141,7 @@ impl FieldAttribute {
         FieldAttribute {
             protection: Protection::Protected,
             display: Display::Detectable,
+            numeric: false,
             modified: false,
         }
     }
@@ -146,6 +149,7 @@ impl FieldAttribute {
         FieldAttribute {
             protection: Protection::Protected,
             display: Display::Intensified,
+            numeric: false,
             modified: false,
         }
     }
@@ -153,6 +157,7 @@ impl FieldAttribute {
         FieldAttribute {
             protection: Protection::Unprotected,
             display: Display::Normal,
+            numeric: false,
             modified: false,
         }
     }
@@ -160,6 +165,7 @@ impl FieldAttribute {
         FieldAttribute {
             protection: Protection::Unprotected,
             display: Display::NonDisplay,
+            numeric: false,
             modified: false,
         }
     }
@@ -168,6 +174,7 @@ impl FieldAttribute {
         FieldAttribute {
             protection: Protection::Protected,
             display: Display::Normal,
+            numeric: false,
             modified: false,
         }
     }
@@ -179,11 +186,19 @@ impl FieldAttribute {
         self.modified = true;
         self
     }
+    /// Nur Ziffern. Das Terminal lehnt andere Zeichen ab.
+    pub const fn numeric(mut self) -> Self {
+        self.numeric = true;
+        self
+    }
 
     fn to_byte(self) -> u8 {
         let mut b: u8 = 0x00;
         if matches!(self.protection, Protection::Protected) {
             b |= 0x20;
+        }
+        if self.numeric {
+            b |= 0x10;
         }
         b |= match self.display {
             Display::Normal => 0x00,
@@ -438,13 +453,13 @@ const ORDER_RA: u8 = 0x3C; // Repeat to Address
 
 // --- Read Partition Query / Query Reply (Implicit Partition) ---
 // Werte verifiziert gegen GA23-0059-07, Kapitel 5 (S. 5-51) und Kapitel 6 (S. 6-71/6-72).
-const _CMD_WSF: u8 = 0xF3; // Write Structured Field
-const _SFID_READ_PARTITION: u8 = 0x01;
-const _RP_TYPE_QUERY_LIST: u8 = 0x03;
-const _RP_REQTYP_QCODE_LIST: u8 = 0x00; // Bits 0-1 von Byte 5
-const _QCODE_IMPLICIT_PARTITION: u8 = 0xA6;
-const _SFID_QUERY_REPLY: u8 = 0x81;
-const _SDPID_IMPLICIT_PARTITION_SIZES: u8 = 0x01;
+const CMD_WSF: u8 = 0xF3; // Write Structured Field
+const SFID_READ_PARTITION: u8 = 0x01;
+const RP_TYPE_QUERY_LIST: u8 = 0x03;
+const RP_REQTYP_QCODE_LIST: u8 = 0x00; // Bits 0-1 von Byte 5
+const QCODE_IMPLICIT_PARTITION: u8 = 0xA6;
+const SFID_QUERY_REPLY: u8 = 0x81;
+const SDPID_IMPLICIT_PARTITION_SIZES: u8 = 0x01;
 
 const ADDR_TABLE: [u8; 64] = [
     0x40, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F,
@@ -453,10 +468,16 @@ const ADDR_TABLE: [u8; 64] = [
     0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F,
 ];
 
+// Ab 4096 reicht die 12-Bit-Kodierung nicht mehr; dann 14-Bit-Binaer
+// (oberste zwei Bits des ersten Bytes = 00, siehe decode_address im Client).
 fn encode_address(addr: u16) -> [u8; 2] {
-    let hi = ((addr >> 6) & 0x3F) as usize;
-    let lo = (addr & 0x3F) as usize;
-    [ADDR_TABLE[hi], ADDR_TABLE[lo]]
+    if addr < 4096 {
+        let hi = ((addr >> 6) & 0x3F) as usize;
+        let lo = (addr & 0x3F) as usize;
+        [ADDR_TABLE[hi], ADDR_TABLE[lo]]
+    } else {
+        [((addr >> 8) & 0x3F) as u8, (addr & 0xFF) as u8]
+    }
 }
 
 fn rowcol(row: u16, col: u16, width: u16) -> u16 {
@@ -469,20 +490,20 @@ fn rowcol(row: u16, col: u16, width: u16) -> u16 {
 // werden, da EWA selbst keinerlei Groesseninformation traegt. Reine
 // Byte-Erzeugung/-Auswertung -- das Senden/Lesen macht der aufrufende Code.
 // ---------------------------------------------------------------------
-pub fn _build_read_partition_query_implicit_partition() -> Vec<u8> {
+pub fn build_read_partition_query_implicit_partition() -> Vec<u8> {
     // Struktur laut GA23-0059-07, S. 5-51:
     // 0-1 Laenge | 2 SFID=01 | 3 PID=FF | 4 TYPE=03 (Query List)
     // 5 REQTYP (Bits 0-1)=00 (QCODE List) | 6..n QCODE-Liste
     let sf: [u8; 7] = [
         0x00,
         0x07, // Laenge dieses SF (7 Bytes, inkl. der 2 Laengenbytes selbst)
-        _SFID_READ_PARTITION,
+        SFID_READ_PARTITION,
         0xFF, // PID: Query-Operation
-        _RP_TYPE_QUERY_LIST,
-        _RP_REQTYP_QCODE_LIST,
-        _QCODE_IMPLICIT_PARTITION,
+        RP_TYPE_QUERY_LIST,
+        RP_REQTYP_QCODE_LIST,
+        QCODE_IMPLICIT_PARTITION,
     ];
-    let mut out = vec![_CMD_WSF];
+    let mut out = vec![CMD_WSF];
     out.extend(sf);
     out
 }
@@ -493,7 +514,7 @@ pub fn _build_read_partition_query_implicit_partition() -> Vec<u8> {
 /// Byte 2 SFID=81, Byte 3 QCODE=A6, Byte 4-5 Flags, danach Self-Defining
 /// Parameter mit SDPID=01: Byte 3-4=WD, 5-6=HD, 7-8=WA, 9-10=HA
 /// (Offsets relativ zum Start des Self-Defining Parameters).
-pub fn _parse_implicit_partition_reply(data: &[u8]) -> Option<(u16, u16)> {
+pub fn parse_implicit_partition_reply(data: &[u8]) -> Option<(u16, u16)> {
     if data.is_empty() || Aid::from_byte(data[0]) != Aid::StructuredField {
         return None; // keine Structured-Field-Antwort (z.B. normale Tasteneingabe)
     }
@@ -507,7 +528,7 @@ pub fn _parse_implicit_partition_reply(data: &[u8]) -> Option<(u16, u16)> {
         let sfid = data[i + 2];
         let qcode = data[i + 3];
 
-        if sfid == _SFID_QUERY_REPLY && qcode == _QCODE_IMPLICIT_PARTITION {
+        if sfid == SFID_QUERY_REPLY && qcode == QCODE_IMPLICIT_PARTITION {
             // Self-Defining Parameter(e) beginnen direkt nach den Flags (Byte 4-5)
             let mut j = i + 6;
             while j + 2 <= i + len {
@@ -516,7 +537,7 @@ pub fn _parse_implicit_partition_reply(data: &[u8]) -> Option<(u16, u16)> {
                     break;
                 }
                 let sdpid = data[j + 1];
-                if sdpid == _SDPID_IMPLICIT_PARTITION_SIZES && sdp_len >= 11 {
+                if sdpid == SDPID_IMPLICIT_PARTITION_SIZES && sdp_len >= 11 {
                     let wa = u16::from_be_bytes([data[j + 7], data[j + 8]]);
                     let ha = u16::from_be_bytes([data[j + 9], data[j + 10]]);
                     return Some((wa, ha));
@@ -601,5 +622,39 @@ mod tests {
         assert!(bytes.windows(3).any(|w| w == [ORDER_SA, 0x41, 0xF4]));
         // Stichprobe: Foreground-SA fuer Yellow (X'28' X'42' X'F6')
         assert!(bytes.windows(3).any(|w| w == [ORDER_SA, 0x42, 0xF6]));
+    }
+
+    #[test]
+    fn numeric_attribute_sets_bit_4() {
+        assert_eq!(FieldAttribute::unprotected_normal().to_byte(), 0x00);
+        assert_eq!(
+            FieldAttribute::unprotected_normal().numeric().to_byte(),
+            0x10
+        );
+        assert_eq!(FieldAttribute::normal().numeric().to_byte(), 0x30);
+    }
+
+    #[test]
+    fn buffer_address_switches_to_14_bit_above_4095() {
+        // 12-Bit-Kodierung: Adresse 0 -> 40 40
+        assert_eq!(encode_address(0), [0x40, 0x40]);
+        // Groesstes 12-Bit-Ergebnis (4095 = 63/63)
+        assert_eq!(encode_address(4095), [0x7F, 0x7F]);
+        // 14-Bit-Binaer ab 4096: oberste zwei Bits des ersten Bytes sind 00
+        assert_eq!(encode_address(4096), [0x10, 0x00]);
+        // Letzte Zelle eines 47x170-Puffers: 46 * 170 + 169 = 7989 = 0x1F35
+        assert_eq!(encode_address(rowcol(46, 169, 170)), [0x1F, 0x35]);
+    }
+
+    #[test]
+    fn set_buffer_address_on_large_screen_uses_14_bit() {
+        let screen = DataStream {
+            command: Command::EraseWriteAlternate,
+            wcc: Wcc::NONE,
+            width: 170,
+            orders: vec![Order::SetBufferAddress { row: 46, col: 169 }],
+        };
+        let bytes = screen.to_bytes();
+        assert!(bytes.windows(3).any(|w| w == [ORDER_SBA, 0x1F, 0x35]));
     }
 }
