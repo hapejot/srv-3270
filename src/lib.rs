@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
+use chrono::Local;
 use serde_json::Value;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 mod datastream;
 use datastream::*;
 
@@ -30,6 +30,7 @@ pub struct ScreenInfo {
 
 pub trait ScreenTrait: Sync + Send {
     fn data_stream(&self, ctx: &Context) -> DataStream;
+    fn orders(&self, ctx: &Context, updates_only: bool) -> Vec<Order>;
 }
 
 #[derive(Clone)]
@@ -48,7 +49,7 @@ impl Screens {
         screens.insert(key.into(), screen);
     }
 
-    fn data_stream(&self, screen_name: &str, ctx: &Context) -> DataStream {
+    fn _data_stream(&self, screen_name: &str, ctx: &Context) -> DataStream {
         let screens = self.screens.try_lock().unwrap();
         if let Some(s) = screens.get(screen_name) {
             s.data_stream(ctx)
@@ -56,10 +57,30 @@ impl Screens {
             println!("{} undefined screen", screen_name);
             DataStream {
                 command: Command::EraseWrite,
-                wcc: Wcc::UnlockKeyboardResetMdt,
+                wcc: Wcc::reset_restore_mdt(),
                 width: 80,
                 orders: vec![],
             }
+        }
+    }
+
+    fn orders(&self, screen_name: &str, ctx: &Context) -> Vec<Order> {
+        let screens = self.screens.try_lock().unwrap();
+        if let Some(s) = screens.get(screen_name) {
+            s.orders(ctx, false)
+        } else {
+            println!("{} undefined screen", screen_name);
+            vec![]
+        }
+    }
+
+    fn update_orders(&self, screen_name: &str, ctx: &Context) -> Vec<Order> {
+        let screens = self.screens.try_lock().unwrap();
+        if let Some(s) = screens.get(screen_name) {
+            s.orders(ctx, true)
+        } else {
+            println!("{} undefined screen", screen_name);
+            vec![]
         }
     }
 }
@@ -83,7 +104,7 @@ impl Context {
         self.values.get(&k).cloned()
     }
 
-    fn set_message(&self, format: String) {}
+    fn set_message(&self, _format: String) {}
 }
 
 // ---------------------------------------------------------------------
@@ -91,21 +112,21 @@ impl Context {
 // 12-Bit-Pufferadress-Kodierung. Bleiben privat -- der Rest des Programms
 // arbeitet nur noch mit den Typen oben.
 // ---------------------------------------------------------------------
-const ORDER_SF: u8 = 0x1D; // Start Field
+const _ORDER_SF: u8 = 0x1D; // Start Field
 const ORDER_SBA: u8 = 0x11; // Set Buffer Address
-const ORDER_IC: u8 = 0x13; // Insert Cursor
+const _ORDER_IC: u8 = 0x13; // Insert Cursor
 
-const ADDR_TABLE: [u8; 64] = [
+const _ADDR_TABLE: [u8; 64] = [
     0x40, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F,
     0x50, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F,
     0x60, 0x61, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F,
     0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F,
 ];
 
-fn encode_address(addr: u16) -> [u8; 2] {
+fn _encode_address(addr: u16) -> [u8; 2] {
     let hi = ((addr >> 6) & 0x3F) as usize;
     let lo = (addr & 0x3F) as usize;
-    [ADDR_TABLE[hi], ADDR_TABLE[lo]]
+    [_ADDR_TABLE[hi], _ADDR_TABLE[lo]]
 }
 
 // ---------------------------------------------------------------------
@@ -135,14 +156,14 @@ fn ebcdic_to_ascii(b: u8) -> u8 {
 }
 
 // ---------------------------------------------------------------------
-fn login_screen(width: u16, username_prefill: &str, error: Option<&str>) -> DataStream {
+fn _login_screen(width: u16, username_prefill: &str, error: Option<&str>) -> DataStream {
     let hint = error
         .unwrap_or("Enter=Anmelden  Clear/PF3=Abbrechen")
         .to_string();
 
     DataStream {
         command: Command::EraseWriteAlternate,
-        wcc: Wcc::UnlockKeyboardResetMdt,
+        wcc: Wcc::reset_restore_mdt(),
         width,
         orders: vec![
             Order::SetBufferAddress { row: 1, col: 1 },
@@ -193,10 +214,10 @@ fn login_screen(width: u16, username_prefill: &str, error: Option<&str>) -> Data
     }
 }
 
-fn result_screen(width: u16, username: &str) -> DataStream {
+fn _result_screen(width: u16, username: &str) -> DataStream {
     DataStream {
         command: Command::EraseWrite,
-        wcc: Wcc::UnlockKeyboardResetMdt,
+        wcc: Wcc::reset_restore_mdt(),
         width,
         orders: vec![
             Order::SetBufferAddress { row: 2, col: 5 },
@@ -457,28 +478,28 @@ fn buffer_address_to_coordinate(width: u16, data: &[u8]) -> (u16, u16) {
 
 enum StructuredField {
     ImplicitPartition {
-        default_width: u16,
-        default_height: u16,
+        _default_width: u16,
+        _default_height: u16,
         alternate_width: u16,
-        alternate_height: u16,
+        _alternate_height: u16,
     },
 }
-impl StructuredField {
-    fn to_bytes(&self) -> Vec<u8> {
-        todo!()
-    }
-}
+// impl StructuredField {
+//     fn to_bytes(&self) -> Vec<u8> {
+//         todo!()
+//     }
+// }
 
-fn structured_field_to_bytes(flds: Vec<StructuredField>) -> anyhow::Result<Vec<u8>> {
-    let mut r = vec![];
-    for f in flds {
-        let b = f.to_bytes();
-        r.push((b.len() >> 8) as u8);
-        r.push((b.len() & 0xff) as u8);
-        r.extend(b);
-    }
-    Ok(r)
-}
+// fn structured_field_to_bytes(flds: Vec<StructuredField>) -> anyhow::Result<Vec<u8>> {
+//     let mut r = vec![];
+//     for f in flds {
+//         let b = f.to_bytes();
+//         r.push((b.len() >> 8) as u8);
+//         r.push((b.len() & 0xff) as u8);
+//         r.extend(b);
+//     }
+//     Ok(r)
+// }
 
 // ---------------------------------------------------------------------
 // Verbindung behandeln
@@ -500,38 +521,57 @@ pub async fn handle_client(
     }
 
     let next_screen = "start";
-    loop {
-        let mut screen = screens.data_stream(next_screen, &context);
-        screen.width = term.width;
-        send_3270_record(&mut stream, &screen.to_bytes()).await?;
-        let response = read_3270_record(&mut stream).await?;
+    let mut command = Command::EraseWriteAlternate;
+    let mut wcc = Wcc::reset_restore_mdt();
+    let width = term.width;
 
-        match parse_response(term.width, &response) {
-            Some(ClientEvent::Submit { fields }) => {
-                // if username.is_empty() {
-                //     error = Some("Fehler: Benutzername darf nicht leer sein.".to_string());
-                //     username_prefill = username;
-                //     continue;
-                // }
-                // if password.is_empty() {
-                //     error = Some("Fehler: Passwort darf nicht leer sein.".to_string());
-                //     username_prefill = username;
-                //     continue;
-                // }
-                for (r, c, t) in fields {
-                    println!("{r} {c} '{t}'");
-                    context.set(format!("{r}x{c}"), t);
+    let mut clock = tokio::time::interval(std::time::Duration::from_secs(1));
+    // let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ScreenEvent>(16);
+
+    let mut orders = screens.orders(next_screen, &context);
+    loop {
+        let screen = DataStream {
+            command,
+            wcc,
+            width,
+            orders: orders.clone(),
+        };
+        send_3270_record(&mut stream, &screen.to_bytes()).await?;
+        wcc = Wcc::NONE;
+
+        tokio::select! {
+            result = read_3270_record(&mut stream) => {
+                let data = result?;
+            match parse_response(term.width, &data) {
+                Some(ClientEvent::Submit { fields }) => {
+                    for (r, c, t) in fields {
+                        println!("{r} {c} '{t}'");
+                        context.set(format!("{r}x{c}"), t);
+                    }
+                    command = Command::EraseWriteAlternate;
+                    orders = screens.orders(next_screen, &context);
+                    wcc = Wcc::reset_restore_mdt();
                 }
+                Some(ClientEvent::Exit) => {
+                    println!("Verbindung durch Client abgebrochen (Clear/PF3).");
+                    break;
+                }
+                None => {
+                    context.set_message(format!("Unerwartete Eingabe"));
+                    continue;
+                }
+            }}
+            _ = clock.tick() => {
+                let now = Local::now();
+                context.set("date", format!("{}",now.format("%Y-%m-%d")));
+                context.set("time", format!("{}",now.format("%H:%M:%S")));
+                orders = screens.update_orders(next_screen, &context);
+                command = Command::Write;
             }
-            Some(ClientEvent::Exit) => {
-                println!("Verbindung durch Client abgebrochen (Clear/PF3).");
-                break;
-            }
-            None => {
-                // error = Some("Unerwartete Eingabe, bitte erneut versuchen.".to_string());
-                context.set_message(format!("Unerwartete Eingabe"));
-                continue;
-            }
+            // Some(event) = event_rx.recv() => {
+            //     let update = render_event(event, width); // ebenfalls Command::Write + Wcc::NoOp
+            //     send_3270_record(&mut stream, &update.to_bytes()).await?;
+            // }
         }
     }
 
@@ -566,10 +606,10 @@ fn parse_structured_fields(buf: &[u8]) -> Vec<StructuredField> {
                     let ha = data[9] as u16 * 0x100 + data[10] as u16;
                     println!("wd:{wd} hd:{hd}    wa:{wa}  ha:{ha}");
                     r.push(StructuredField::ImplicitPartition {
-                        default_width: wd,
-                        default_height: hd,
+                        _default_width: wd,
+                        _default_height: hd,
                         alternate_width: wa,
-                        alternate_height: ha,
+                        _alternate_height: ha,
                     });
                 }
                 _ => {}
@@ -579,27 +619,3 @@ fn parse_structured_fields(buf: &[u8]) -> Vec<StructuredField> {
     }
     r
 }
-
-// #[tokio::main]
-// async fn main() -> std::io::Result<()> {
-//     // Kurze Demonstration: der Login-Screen als JSON -- zeigt, dass
-//     // DataStream/Order jetzt eine vollstaendig beschreibbare (und damit
-//     // auch loggbare/testbare) Struktur sind statt roher Bytes.
-//     // let demo = login_screen(80, "", None);
-//     // println!(
-//     //     "Beispiel-Datenstrom als JSON:\n{}\n",
-//     //     serde_json::to_string_pretty(&demo).unwrap()
-//     // );
-
-//     let listener = TcpListener::bind("0.0.0.0:3270").await?;
-//     println!("TN3270-Demo-Server laeuft auf Port 3270 ...");
-
-//     loop {
-//         let (stream, _) = listener.accept().await?;
-//         tokio::spawn(async move {
-//             if let Err(e) = handle_client(stream).await {
-//                 eprintln!("Fehler bei Verbindung: {e}");
-//             }
-//         });
-//     }
-// }

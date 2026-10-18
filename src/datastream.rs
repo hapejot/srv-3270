@@ -32,19 +32,75 @@ impl Command {
         }
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PrintFormat {
+    Default132, // 00: NL/CR/EM im Datenstrom bestimmen die Zeilenlänge (132 ohne Orders)
+    Chars40,    // 01
+    Chars64,    // 10
+    Chars80,    // 11
+}
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum Wcc {
-    /// Tastatur entriegeln + MDT aller Felder zuruecksetzen (0xC3) --
-    /// der ueblicherweise verwendete WCC-Wert nach einem Erase/Write.
-    UnlockKeyboardResetMdt,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wcc {
+    pub reset: bool, // Bit 1: Partition-Eigenschaften auf Default zurücksetzen
+    pub print_format: PrintFormat, // Bit 2-3: nur Drucker, bei Displays Default lassen
+    pub start_printer: bool, // Bit 4: Local Copy nach dem Write
+    pub sound_alarm: bool, // Bit 5
+    pub keyboard_restore: bool, // Bit 6: entriegelt Tastatur, setzt AID zurück
+    pub reset_mdt: bool, // Bit 7: alle MDT-Bits im Buffer zurücksetzen
 }
 
 impl Wcc {
-    fn to_byte(self) -> u8 {
-        match self {
-            Wcc::UnlockKeyboardResetMdt => 0xC3,
+    pub const NONE: Wcc = Wcc {
+        reset: false,
+        print_format: PrintFormat::Default132,
+        start_printer: false,
+        sound_alarm: false,
+        keyboard_restore: false,
+        reset_mdt: false,
+    };
+    /// Entspricht deinem bisherigen UnlockKeyboardResetMdt (0xC3)
+    pub const fn reset_restore_mdt() -> Self {
+        Wcc {
+            reset: true,
+            keyboard_restore: true,
+            reset_mdt: true,
+            ..Wcc::NONE
         }
+    }
+    /// "Write(reset,resetMDT)" aus deinem zweiten Trace (0xC1)
+    pub const fn reset_mdt() -> Self {
+        Wcc {
+            reset: true,
+            reset_mdt: true,
+            ..Wcc::NONE
+        }
+    }
+
+    pub fn to_byte(self) -> u8 {
+        let mut b: u8 = 0x80; // Bit 0: ohne Funktion, wird wie üblich gesetzt
+        if self.reset {
+            b |= 0x40;
+        }
+        b |= match self.print_format {
+            PrintFormat::Default132 => 0x00,
+            PrintFormat::Chars40 => 0x10,
+            PrintFormat::Chars64 => 0x20,
+            PrintFormat::Chars80 => 0x30,
+        };
+        if self.start_printer {
+            b |= 0x08;
+        }
+        if self.sound_alarm {
+            b |= 0x04;
+        }
+        if self.keyboard_restore {
+            b |= 0x02;
+        }
+        if self.reset_mdt {
+            b |= 0x01;
+        }
+        b
     }
 }
 
@@ -382,13 +438,13 @@ const ORDER_RA: u8 = 0x3C; // Repeat to Address
 
 // --- Read Partition Query / Query Reply (Implicit Partition) ---
 // Werte verifiziert gegen GA23-0059-07, Kapitel 5 (S. 5-51) und Kapitel 6 (S. 6-71/6-72).
-const CMD_WSF: u8 = 0xF3; // Write Structured Field
-const SFID_READ_PARTITION: u8 = 0x01;
-const RP_TYPE_QUERY_LIST: u8 = 0x03;
-const RP_REQTYP_QCODE_LIST: u8 = 0x00; // Bits 0-1 von Byte 5
-const QCODE_IMPLICIT_PARTITION: u8 = 0xA6;
-const SFID_QUERY_REPLY: u8 = 0x81;
-const SDPID_IMPLICIT_PARTITION_SIZES: u8 = 0x01;
+const _CMD_WSF: u8 = 0xF3; // Write Structured Field
+const _SFID_READ_PARTITION: u8 = 0x01;
+const _RP_TYPE_QUERY_LIST: u8 = 0x03;
+const _RP_REQTYP_QCODE_LIST: u8 = 0x00; // Bits 0-1 von Byte 5
+const _QCODE_IMPLICIT_PARTITION: u8 = 0xA6;
+const _SFID_QUERY_REPLY: u8 = 0x81;
+const _SDPID_IMPLICIT_PARTITION_SIZES: u8 = 0x01;
 
 const ADDR_TABLE: [u8; 64] = [
     0x40, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F,
@@ -413,20 +469,20 @@ fn rowcol(row: u16, col: u16, width: u16) -> u16 {
 // werden, da EWA selbst keinerlei Groesseninformation traegt. Reine
 // Byte-Erzeugung/-Auswertung -- das Senden/Lesen macht der aufrufende Code.
 // ---------------------------------------------------------------------
-pub fn build_read_partition_query_implicit_partition() -> Vec<u8> {
+pub fn _build_read_partition_query_implicit_partition() -> Vec<u8> {
     // Struktur laut GA23-0059-07, S. 5-51:
     // 0-1 Laenge | 2 SFID=01 | 3 PID=FF | 4 TYPE=03 (Query List)
     // 5 REQTYP (Bits 0-1)=00 (QCODE List) | 6..n QCODE-Liste
     let sf: [u8; 7] = [
         0x00,
         0x07, // Laenge dieses SF (7 Bytes, inkl. der 2 Laengenbytes selbst)
-        SFID_READ_PARTITION,
+        _SFID_READ_PARTITION,
         0xFF, // PID: Query-Operation
-        RP_TYPE_QUERY_LIST,
-        RP_REQTYP_QCODE_LIST,
-        QCODE_IMPLICIT_PARTITION,
+        _RP_TYPE_QUERY_LIST,
+        _RP_REQTYP_QCODE_LIST,
+        _QCODE_IMPLICIT_PARTITION,
     ];
-    let mut out = vec![CMD_WSF];
+    let mut out = vec![_CMD_WSF];
     out.extend(sf);
     out
 }
@@ -437,7 +493,7 @@ pub fn build_read_partition_query_implicit_partition() -> Vec<u8> {
 /// Byte 2 SFID=81, Byte 3 QCODE=A6, Byte 4-5 Flags, danach Self-Defining
 /// Parameter mit SDPID=01: Byte 3-4=WD, 5-6=HD, 7-8=WA, 9-10=HA
 /// (Offsets relativ zum Start des Self-Defining Parameters).
-pub fn parse_implicit_partition_reply(data: &[u8]) -> Option<(u16, u16)> {
+pub fn _parse_implicit_partition_reply(data: &[u8]) -> Option<(u16, u16)> {
     if data.is_empty() || Aid::from_byte(data[0]) != Aid::StructuredField {
         return None; // keine Structured-Field-Antwort (z.B. normale Tasteneingabe)
     }
@@ -451,7 +507,7 @@ pub fn parse_implicit_partition_reply(data: &[u8]) -> Option<(u16, u16)> {
         let sfid = data[i + 2];
         let qcode = data[i + 3];
 
-        if sfid == SFID_QUERY_REPLY && qcode == QCODE_IMPLICIT_PARTITION {
+        if sfid == _SFID_QUERY_REPLY && qcode == _QCODE_IMPLICIT_PARTITION {
             // Self-Defining Parameter(e) beginnen direkt nach den Flags (Byte 4-5)
             let mut j = i + 6;
             while j + 2 <= i + len {
@@ -460,7 +516,7 @@ pub fn parse_implicit_partition_reply(data: &[u8]) -> Option<(u16, u16)> {
                     break;
                 }
                 let sdpid = data[j + 1];
-                if sdpid == SDPID_IMPLICIT_PARTITION_SIZES && sdp_len >= 11 {
+                if sdpid == _SDPID_IMPLICIT_PARTITION_SIZES && sdp_len >= 11 {
                     let wa = u16::from_be_bytes([data[j + 7], data[j + 8]]);
                     let ha = u16::from_be_bytes([data[j + 9], data[j + 10]]);
                     return Some((wa, ha));
@@ -491,7 +547,7 @@ fn ascii_byte_to_ebcdic(b: u8) -> u8 {
     r[0]
 }
 
-pub fn ebcdic_to_ascii(b: u8) -> u8 {
+pub fn _ebcdic_to_ascii(b: u8) -> u8 {
     let buf = [b];
     let mut r = [0u8];
     ebcdic::ebcdic::Ebcdic::ebcdic_to_ascii(&buf, &mut r, 1, true, true);
@@ -509,7 +565,7 @@ mod tests {
     fn imon_ausschnitt_laesst_sich_beschreiben() {
         let screen = DataStream {
             command: Command::EraseWrite,
-            wcc: Wcc::UnlockKeyboardResetMdt,
+            wcc: Wcc::NONE,
             width: 80,
             orders: vec![
                 Order::SetBufferAddress { row: 1, col: 1 },
