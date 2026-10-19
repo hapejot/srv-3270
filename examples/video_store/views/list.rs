@@ -1,12 +1,11 @@
 //! Listenansicht: Filter, Paging und Auswahl eines Videos.
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{fmt_duration, fmt_size, items, val, P_ITEMS};
+use super::{P_ITEMS, fmt_duration, fmt_size, items, val};
 use crate::odata::{Filter, Odata};
-use srv_3270::{clip, Action, Aid, App, Color, FieldAttribute, FieldId, Screen, View};
-
+use srv_3270::{Action, Aid, App, Color, FieldAttribute, FieldId, Screen, View, clip};
 
 const LIST_TOP: u16 = 3;
 const KEYS_LIST: &str =
@@ -168,7 +167,7 @@ impl View<Odata> for ListView {
                 total
             ),
             FieldAttribute::protected_intensified(),
-            Some(Color::Turquoise),
+            Some(Color::Blue),
         );
         s.text(
             1,
@@ -182,15 +181,27 @@ impl View<Odata> for ListView {
             2,
             &columns("Titel", "Dauer", "Aufloes.", "Codec", "Groesse", "G"),
             FieldAttribute::protected_intensified(),
-            None,
+            Some(Color::White),
         );
         for (i, v) in items(app).iter().enumerate().take(page_size(app)) {
             let row = LIST_TOP + i as u16;
             s.input(FieldId::Select(i), row, 0, 1, "");
-            s.text(row, 2, &list_line(v), FieldAttribute::normal(), None);
+            s.text(
+                row,
+                2,
+                &list_line(v),
+                FieldAttribute::normal(),
+                Some(Color::Green),
+            );
         }
         let r_cmd = rows - 3;
-        s.text(r_cmd, 0, "Befehl ==>", FieldAttribute::normal(), None);
+        s.text(
+            r_cmd,
+            0,
+            "Befehl ==>",
+            FieldAttribute::normal(),
+            Some(Color::Blue),
+        );
         s.input(FieldId::Command, r_cmd, 11, cols - 12, "");
         s.focus(FieldId::Command);
         s.text(
@@ -198,13 +209,24 @@ impl View<Odata> for ListView {
             0,
             &app.msg,
             FieldAttribute::protected_intensified(),
-            None,
+            Some(Color::Yellow),
         );
-        s.text(rows - 1, 0, KEYS_LIST, FieldAttribute::normal(), None);
+        s.text(
+            rows - 1,
+            0,
+            KEYS_LIST,
+            FieldAttribute::normal(),
+            Some(Color::Blue),
+        );
         s
     }
 
-    async fn handle(&mut self, app: &mut App<Odata>, aid: Aid, values: &[(FieldId, String)]) -> Action {
+    async fn handle(
+        &mut self,
+        app: &mut App<Odata>,
+        aid: Aid,
+        values: &[(FieldId, String)],
+    ) -> Action {
         match aid {
             Aid::Pf(3) | Aid::Clear => return Action::Exit,
             Aid::Pf(5) => {

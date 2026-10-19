@@ -478,12 +478,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
-name = "ebcdic"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "206cdf0fb3a39f4b0adaf5002a59e7a53382fd68ad2afe907c041f5ae4525600"
-
-[[package]]
 name = "encoding_rs"
 version = "0.8.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1751,7 +1745,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
- "ebcdic",
  "keepass",
  "percent-encoding",
  "reqwest",

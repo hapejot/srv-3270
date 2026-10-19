@@ -4,13 +4,14 @@
 //! unter `/list` erhalten und wird beim Speichern aktualisiert.
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
-use srv_3270::{clip, Action, Aid, App, Color, Field, FieldAttribute, FieldId, FieldKind, Screen, View};
+use serde_json::{Value, json};
+use srv_3270::{
+    Action, Aid, App, Color, Field, FieldAttribute, FieldId, FieldKind, Screen, View, clip,
+};
 use tracing::info;
 
-use super::{fmt_duration, fmt_size, fmt_ts, items, val, P_ITEMS};
+use super::{P_ITEMS, fmt_duration, fmt_size, fmt_ts, items, val};
 use crate::odata::Odata;
-
 
 const KEYS_DETAIL: &str = "PF3 Zurueck  PF5 Speichern  PF7/PF8 Vor/Zurueck  Enter Uebernehmen";
 
@@ -203,7 +204,7 @@ impl DetailView {
             0,
             &format!("VIDEO-STORE  Detail {pos}"),
             FieldAttribute::protected_intensified(),
-            Some(Color::Turquoise),
+            Some(Color::Blue),
         );
         let marker = if detail_dirty(app) {
             "  *geaendert*"
@@ -252,8 +253,8 @@ impl DetailView {
         ];
         for (i, (label, value)) in rows_kv.iter().enumerate() {
             let row = 6 + i as u16;
-            s.text(row, 2, label, fa, None);
-            s.text(row, 20, value, fa, None);
+            s.text(row, 2, label, fa, Some(Color::Blue));
+            s.text(row, 20, value, fa, Some(Color::Green));
         }
 
         info!(?v);
@@ -261,13 +262,13 @@ impl DetailView {
         let mut tags = tag_names(v);
         tags.sort();
         let mut row = 17u16;
-        s.text(row, 2, "Tags", fa, None);
+        s.text(row, 2, "Tags", fa, Some(Color::Blue));
         if tags.is_empty() {
-                s.text(row, 20, "-", fa, None);
+            s.text(row, 20, "-", fa, Some(Color::Green));
         } else {
             let mut col = 0;
             for tag in tags.iter() {
-                s.text(row, 20 + col * 20, tag, fa, None);
+                s.text(row, 20 + col * 20, tag, fa, Some(Color::Green));
                 col += 1;
                 if col > 2 {
                     col = 0;
@@ -281,9 +282,15 @@ impl DetailView {
             0,
             &app.msg,
             FieldAttribute::protected_intensified(),
-            None,
+            Some(Color::Yellow),
         );
-        s.text(rows - 1, 0, KEYS_DETAIL, FieldAttribute::normal(), None);
+        s.text(
+            rows - 1,
+            0,
+            KEYS_DETAIL,
+            FieldAttribute::normal(),
+            Some(Color::Blue),
+        );
         s.focus(FieldId::Named(FIELD_TITLE));
         s
     }
@@ -300,7 +307,12 @@ impl View<Odata> for DetailView {
         Self::render_detail(app)
     }
 
-    async fn handle(&mut self, app: &mut App<Odata>, aid: Aid, values: &[(FieldId, String)]) -> Action {
+    async fn handle(
+        &mut self,
+        app: &mut App<Odata>,
+        aid: Aid,
+        values: &[(FieldId, String)],
+    ) -> Action {
         match aid {
             Aid::Pf(3) | Aid::Clear => {
                 app.ctx.set(P_DETAIL, Value::Null);

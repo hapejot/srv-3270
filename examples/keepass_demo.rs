@@ -21,8 +21,7 @@ use keepass::{Database, DatabaseKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use srv_3270::{
-    Action, App, Aid, Color, Field, FieldAttribute, FieldId, FieldKind, Screen, Server, View,
-    clip,
+    Action, Aid, App, Color, Field, FieldAttribute, FieldId, FieldKind, Screen, Server, View, clip,
 };
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -61,8 +60,7 @@ struct Entry {
 
 /// Oeffnet die Datenbank mit dem Passwort und liefert alle Eintraege.
 fn load_entries(path: &PathBuf, password: &str) -> Result<Vec<Entry>, String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("Datenbank nicht lesbar: {e}"))?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Datenbank nicht lesbar: {e}"))?;
     let db = Database::open(&mut file, DatabaseKey::new().with_password(password))
         .map_err(|_| "Falsches Passwort".to_string())?;
     Ok(db
@@ -113,16 +111,22 @@ fn frame(s: &mut Screen, title: &str, msg: &str, keys: &str) {
         0,
         title,
         FieldAttribute::protected_intensified(),
-        Some(Color::Turquoise),
+        Some(Color::Blue),
     );
     s.text(
         s.rows - 2,
         0,
         msg,
         FieldAttribute::protected_intensified(),
-        None,
+        Some(Color::Yellow),
     );
-    s.text(s.rows - 1, 0, keys, FieldAttribute::normal(), None);
+    s.text(
+        s.rows - 1,
+        0,
+        keys,
+        FieldAttribute::normal(),
+        Some(Color::Blue),
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -165,7 +169,9 @@ impl View<Shared> for Login {
         match aid {
             Aid::Pf(3) | Aid::Clear => Action::Exit,
             Aid::Enter => {
-                let pw = value(values, FieldId::Named("pw")).unwrap_or("").to_string();
+                let pw = value(values, FieldId::Named("pw"))
+                    .unwrap_or("")
+                    .to_string();
                 if pw.is_empty() {
                     app.msg = "Bitte Passwort eingeben.".into();
                     return Action::Stay;
@@ -183,7 +189,10 @@ impl View<Shared> for Login {
                     }
                     Err(msg) => {
                         self.attempts += 1;
-                        info!("Anmeldung fehlgeschlagen ({}/{MAX_ATTEMPTS}): {msg}", self.attempts);
+                        info!(
+                            "Anmeldung fehlgeschlagen ({}/{MAX_ATTEMPTS}): {msg}",
+                            self.attempts
+                        );
                         if self.attempts >= MAX_ATTEMPTS {
                             return Action::Exit;
                         }
@@ -248,7 +257,7 @@ impl View<Shared> for List {
             0,
             &format!("S {:<30} {}", "Titel", "Benutzer"),
             FieldAttribute::protected_intensified(),
-            None,
+            Some(Color::White),
         );
         for (i, idx) in hits.iter().skip(self.page * size).take(size).enumerate() {
             let row = LIST_TOP + i as u16;
@@ -260,11 +269,17 @@ impl View<Shared> for List {
                 2,
                 &format!("{:<30} {}", clip(&e.title, 30), clip(&e.user, 40)),
                 FieldAttribute::normal(),
-                None,
+                Some(Color::Green),
             );
         }
         let r_cmd = app.rows - 3;
-        s.text(r_cmd, 0, "Befehl ==>", FieldAttribute::normal(), None);
+        s.text(
+            r_cmd,
+            0,
+            "Befehl ==>",
+            FieldAttribute::normal(),
+            Some(Color::Blue),
+        );
         s.input(FieldId::Command, r_cmd, 11, app.cols - 12, "");
         s.focus(FieldId::Command);
         s
@@ -284,7 +299,9 @@ impl View<Shared> for List {
             }
             Aid::Pf(7) => self.page = self.page.saturating_sub(1),
             Aid::Pf(8) => {
-                let pages = matches(&entries(app), &filter(app)).len().div_ceil(Self::page_size(app));
+                let pages = matches(&entries(app), &filter(app))
+                    .len()
+                    .div_ceil(Self::page_size(app));
                 if self.page + 1 < pages {
                     self.page += 1;
                 }
@@ -301,7 +318,10 @@ impl View<Shared> for List {
                         params: json!({ "idx": idx }),
                     };
                 }
-                let cmd = value(values, FieldId::Command).unwrap_or("").trim().to_string();
+                let cmd = value(values, FieldId::Command)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 self.command(app, &cmd);
             }
             _ => app.msg = "Taste hier nicht belegt".into(),
@@ -343,9 +363,7 @@ struct Detail {
 #[async_trait]
 impl View<Shared> for Detail {
     async fn enter(&mut self, app: &mut App<Shared>, params: Value) -> Result<(), String> {
-        let idx = params["idx"]
-            .as_u64()
-            .ok_or("Detail ohne Eintragsnummer")? as usize;
+        let idx = params["idx"].as_u64().ok_or("Detail ohne Eintragsnummer")? as usize;
         if idx >= entries(app).len() {
             return Err("Eintrag nicht gefunden".into());
         }
@@ -378,8 +396,14 @@ impl View<Shared> for Detail {
         ];
         for (i, (label, val)) in rows.iter().enumerate() {
             let row = 3 + 2 * i as u16;
-            s.text(row, 2, label, FieldAttribute::normal(), None);
-            s.text(row, 20, &clip(val, 50), FieldAttribute::normal(), None);
+            s.text(row, 2, label, FieldAttribute::normal(), Some(Color::Blue));
+            s.text(
+                row,
+                20,
+                &clip(val, 50),
+                FieldAttribute::normal(),
+                Some(Color::Green),
+            );
         }
         s
     }

@@ -3,7 +3,7 @@
 //! Antwort des Terminals einem Feld zugeordnet werden kann.
 
 use crate::datastream::{Command, DataStream, FieldAttribute, Order, Wcc};
-use crate::{Attribute, Color};
+use crate::{Attribute, Color, Highlight};
 
 /// Identitaet eines Eingabefeldes auf dem Bildschirm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,7 +152,15 @@ impl Screen {
         let data = pad(initial, len as usize);
         self.orders.push(Order::SetBufferAddress { row, col });
         self.orders.push(Order::StartField(fa));
+        // Eingabefelder: Tuerkis + unterstrichen (siehe docs/STYLE_GUIDE.md)
+        self.orders
+            .push(Order::SetAttribute(Attribute::Foreground(Color::Turquoise)));
+        self.orders
+            .push(Order::SetAttribute(Attribute::Highlighting(
+                Highlight::Underscore,
+            )));
         self.orders.push(Order::Text(data));
+        self.orders.push(Order::SetAttribute(Attribute::Reset));
         self.inputs.push(InputField {
             id,
             pos: row as usize * self.cols as usize + col as usize,
@@ -268,7 +276,12 @@ mod tests {
         assert_eq!(s.form(3, &fields), 5);
         assert_eq!(s.inputs.len(), 2);
         assert_eq!(
-            (s.inputs[0].id, s.inputs[0].row, s.inputs[0].col, s.inputs[0].len),
+            (
+                s.inputs[0].id,
+                s.inputs[0].row,
+                s.inputs[0].col,
+                s.inputs[0].len
+            ),
             (FieldId::Named("a"), 3, INPUT_COL, 10)
         );
         assert_eq!(

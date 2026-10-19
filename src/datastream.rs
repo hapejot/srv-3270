@@ -489,28 +489,18 @@ pub fn parse_implicit_partition_reply(data: &[u8]) -> Option<(u16, u16)> {
 }
 
 // ---------------------------------------------------------------------
+/// Kodiert Text (UTF-8) nach CP037. Siehe [`crate::ebcdic`].
 pub fn ascii_to_ebcdic(s: &str) -> Vec<u8> {
-    // s.bytes().map(ascii_byte_to_ebcdic).collect()
-    let b = s.bytes().collect::<Vec<_>>();
-    let n = b.len();
-    let mut r = Vec::with_capacity(n);
-    r.resize(n, 0);
-    ebcdic::ebcdic::Ebcdic::ascii_to_ebcdic(&b, r.as_mut_slice(), n, true);
-    r
+    crate::ebcdic::encode(s)
 }
 
 fn ascii_byte_to_ebcdic(b: u8) -> u8 {
-    let buf = [b];
-    let mut r = [0u8];
-    ebcdic::ebcdic::Ebcdic::ascii_to_ebcdic(&buf, &mut r, 1, true);
-    r[0]
+    crate::ebcdic::encode_char(b as char)
 }
 
-/// Konvertiert einen EBCDIC-Feldinhalt (z. B. vom Client gesendete Eingabe) nach ASCII/Latin-1.
+/// Konvertiert einen EBCDIC-Feldinhalt (z. B. vom Client gesendete Eingabe) nach Unicode.
 pub fn ebcdic_to_ascii_str(src: &[u8]) -> String {
-    let mut dest = vec![0u8; src.len()];
-    ebcdic::ebcdic::Ebcdic::ebcdic_to_ascii(src, &mut dest, src.len(), true, true);
-    dest.iter().map(|&b| b as char).collect()
+    crate::ebcdic::decode(src)
 }
 
 #[cfg(test)]

@@ -282,45 +282,11 @@ pub fn parse_inbound(rec: &[u8]) -> Inbound {
 }
 
 // ---------------------------------------------------------------------
-// EBCDIC (CP037) -> ASCII. Nicht abbildbare Zeichen werden zu Leerzeichen.
+// EBCDIC (CP037) -> Unicode. Siehe [`crate::ebcdic`].
 // ---------------------------------------------------------------------
 
 pub fn ebcdic_to_ascii(b: u8) -> char {
-    match b {
-        0x40 => ' ',
-        0x4B => '.',
-        0x4C => '<',
-        0x4D => '(',
-        0x4E => '+',
-        0x4F => '|',
-        0x50 => '&',
-        0x5A => '!',
-        0x5B => '$',
-        0x5C => '*',
-        0x5D => ')',
-        0x5E => ';',
-        0x60 => '-',
-        0x61 => '/',
-        0x6B => ',',
-        0x6C => '%',
-        0x6D => '_',
-        0x6E => '>',
-        0x6F => '?',
-        0x7A => ':',
-        0x7B => '#',
-        0x7C => '@',
-        0x7D => '\'',
-        0x7E => '=',
-        0x7F => '"',
-        0x81..=0x89 => (b'a' + (b - 0x81)) as char,
-        0x91..=0x99 => (b'j' + (b - 0x91)) as char,
-        0xA2..=0xA9 => (b's' + (b - 0xA2)) as char,
-        0xC1..=0xC9 => (b'A' + (b - 0xC1)) as char,
-        0xD1..=0xD9 => (b'J' + (b - 0xD1)) as char,
-        0xE2..=0xE9 => (b'S' + (b - 0xE2)) as char,
-        0xF0..=0xF9 => (b'0' + (b - 0xF0)) as char,
-        _ => ' ',
-    }
+    crate::ebcdic::decode_byte(b)
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@
 //! - [`context`]: JSON-Datenkontext pro Sitzung.
 
 pub mod context;
+pub mod ebcdic;
 mod datastream;
 pub mod screen;
 pub mod session;
