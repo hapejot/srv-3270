@@ -22,12 +22,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use srv_3270::{
     Action, Aid, App, Color, Field, FieldAttribute, FieldId, FieldKind, Screen, Server, View, clip,
+    data_marker,
 };
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 const MAX_ATTEMPTS: u32 = 3;
-const LIST_TOP: u16 = 3;
+const LIST_TOP: u16 = 4;
 const P_ENTRIES: &str = "/entries";
 const P_FILTER: &str = "/filter";
 
@@ -270,6 +271,27 @@ impl View<Shared> for List {
                 &format!("{:<30} {}", clip(&e.title, 30), clip(&e.user, 40)),
                 FieldAttribute::normal(),
                 Some(Color::Green),
+            );
+        }
+        // Top/Bottom of Data: Top auf der ersten Seite, Bottom nach dem letzten Eintrag.
+        if self.page == 0 {
+            s.text(
+                LIST_TOP - 1,
+                0,
+                &data_marker("Top of Data", app.cols as usize),
+                FieldAttribute::normal(),
+                Some(Color::Blue),
+            );
+        }
+        let shown = hits.iter().skip(self.page * size).take(size).count();
+        let bottom_row = LIST_TOP + shown as u16;
+        if self.page + 1 >= pages && bottom_row < app.rows - 3 {
+            s.text(
+                bottom_row,
+                0,
+                &data_marker("Bottom of Data", app.cols as usize),
+                FieldAttribute::normal(),
+                Some(Color::Blue),
             );
         }
         let r_cmd = app.rows - 3;

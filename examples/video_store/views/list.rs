@@ -5,9 +5,9 @@ use serde_json::{Value, json};
 
 use super::{P_ITEMS, fmt_duration, fmt_size, items, val};
 use crate::odata::{Filter, Odata};
-use srv_3270::{Action, Aid, App, Color, FieldAttribute, FieldId, Screen, View, clip};
+use srv_3270::{Action, Aid, App, Color, FieldAttribute, FieldId, Screen, View, clip, data_marker};
 
-const LIST_TOP: u16 = 3;
+const LIST_TOP: u16 = 4;
 const KEYS_LIST: &str =
     "PF3 Ende  PF5 Neu laden  PF7 Zurueck  PF8 Weiter  Enter=Ausfuehren/Oeffnen";
 const HELP: &str =
@@ -192,6 +192,26 @@ impl View<Odata> for ListView {
                 &list_line(v),
                 FieldAttribute::normal(),
                 Some(Color::Green),
+            );
+        }
+        // Top/Bottom of Data: Top auf der ersten Seite, Bottom nach dem letzten Eintrag.
+        if page(app) == 0 {
+            s.text(
+                LIST_TOP - 1,
+                0,
+                &data_marker("Top of Data", cols as usize),
+                FieldAttribute::normal(),
+                Some(Color::Blue),
+            );
+        }
+        let bottom_row = LIST_TOP + items(app).len().min(page_size(app)) as u16;
+        if !has_next(app) && bottom_row < rows - 3 {
+            s.text(
+                bottom_row,
+                0,
+                &data_marker("Bottom of Data", cols as usize),
+                FieldAttribute::normal(),
+                Some(Color::Blue),
             );
         }
         let r_cmd = rows - 3;

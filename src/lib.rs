@@ -20,6 +20,6 @@ pub use datastream::{
     ascii_to_ebcdic, build_read_partition_query_implicit_partition, ebcdic_to_ascii_str,
     parse_implicit_partition_reply,
 };
-pub use screen::{Field, FieldId, FieldKind, Screen, clip};
+pub use screen::{Field, FieldId, FieldKind, Screen, clip, data_marker};
 pub use session::{Action, App, Server, View, map_fields};
 pub use tn3270::{Aid, Inbound, Terminal, parse_inbound};

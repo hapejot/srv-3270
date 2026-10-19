@@ -86,6 +86,21 @@ pub struct Screen {
     cursor: Option<(u16, u16)>,
 }
 
+/// Markierungszeile wie `*** Top of Data ***`, die ueber die gesamte
+/// Breite `width` mit Sternchen gefuellt wird. Ueberschuessige Sterne
+/// stehen rechts.
+pub fn data_marker(label: &str, width: usize) -> String {
+    let body = format!(" {label} ");
+    let len = body.chars().count();
+    if width <= len + 2 {
+        return clip(&body, width);
+    }
+    let stars = width - len;
+    let left = stars / 2;
+    let right = stars - left;
+    format!("{}{}{}", "*".repeat(left), body, "*".repeat(right))
+}
+
 /// Kuerzt einen Text auf maximal `max` Zeichen.
 pub fn clip(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
@@ -288,5 +303,20 @@ mod tests {
             (s.inputs[1].id, s.inputs[1].row, s.inputs[1].col),
             (FieldId::Named("b"), 4, INPUT_COL)
         );
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::data_marker;
+
+    #[test]
+    fn marker_fuellt_breite() {
+        for w in [40usize, 80, 132] {
+            let m = data_marker("Top of Data", w);
+            assert_eq!(m.chars().count(), w);
+            assert!(m.starts_with('*') && m.ends_with('*'));
+            assert!(m.contains(" Top of Data "));
+        }
     }
 }
