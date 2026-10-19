@@ -374,71 +374,6 @@ impl DataStream {
     }
 }
 
-/// Attention-Identifier, den der Client beim Enter/PF-Tastendruck zurueckschickt.
-///
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Aid {
-    Enter,
-    Clear,
-    Pf1,
-    Pf2,
-    Pf3,
-    Pf4,
-    Pf5,
-    Pf6,
-    Pf7,
-    Pf8,
-    Pf9,
-    Pf10,
-    Pf11,
-    Pf12,
-    Pf13,
-    Pf14,
-    Pf15,
-    Pf16,
-    Pf17,
-    Pf18,
-    Pf19,
-    Pf20,
-    Pf21,
-    Pf22,
-    Pf23,
-    Pf24,
-    /// keine normale Tasteneingabe
-    StructuredField,
-    Unknown,
-}
-
-impl Aid {
-    pub fn from_byte(b: u8) -> Self {
-        match b {
-            0x7D => Aid::Enter,
-            0x6D => Aid::Clear,
-            0xF1 => Aid::Pf1,
-            0xF2 => Aid::Pf2,
-            0xF3 => Aid::Pf3,
-            0xF4 => Aid::Pf4,
-            0xF5 => Aid::Pf5,
-            0xF6 => Aid::Pf6,
-            0xF7 => Aid::Pf7,
-            0xF8 => Aid::Pf8,
-            0xF9 => Aid::Pf9,
-            0xFA => Aid::Pf10,
-            0xFB => Aid::Pf11,
-            0xFC => Aid::Pf12,
-            0xC1 => Aid::Pf13,
-            0xC2 => Aid::Pf14,
-            0xC3 => Aid::Pf15,
-            0xC4 => Aid::Pf16,
-            0xC5 => Aid::Pf17,
-            0xC6 => Aid::Pf18,
-            0xC7 => Aid::Pf19,
-            0x88 => Aid::StructuredField,
-            _ => Aid::Unknown,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------
 // Low-Level-Bausteine: Order-Codes des 3270-Datenstroms und
 // 12-Bit-Pufferadress-Kodierung. ORDER_SBA ist pub, da aufrufender Code
@@ -446,6 +381,8 @@ impl Aid {
 // der Rest bleibt intern.
 // ---------------------------------------------------------------------
 pub const ORDER_SBA: u8 = 0x11; // Set Buffer Address
+/// AID-Byte, mit dem ein Terminal eine Structured-Field-Antwort (Query Reply) einleitet.
+pub const SF_REPLY_AID: u8 = 0x88;
 const ORDER_SF: u8 = 0x1D; // Start Field
 const ORDER_IC: u8 = 0x13; // Insert Cursor
 const ORDER_SA: u8 = 0x28; // Set Attribute
@@ -461,7 +398,8 @@ const QCODE_IMPLICIT_PARTITION: u8 = 0xA6;
 const SFID_QUERY_REPLY: u8 = 0x81;
 const SDPID_IMPLICIT_PARTITION_SIZES: u8 = 0x01;
 
-const ADDR_TABLE: [u8; 64] = [
+/// Puffer-Adress-Codes (12-Bit), auch fuer die Dekodierung in `tn3270` genutzt.
+pub(crate) const ADDR_TABLE: [u8; 64] = [
     0x40, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F,
     0x50, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F,
     0x60, 0x61, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F,
@@ -515,7 +453,7 @@ pub fn build_read_partition_query_implicit_partition() -> Vec<u8> {
 /// Parameter mit SDPID=01: Byte 3-4=WD, 5-6=HD, 7-8=WA, 9-10=HA
 /// (Offsets relativ zum Start des Self-Defining Parameters).
 pub fn parse_implicit_partition_reply(data: &[u8]) -> Option<(u16, u16)> {
-    if data.is_empty() || Aid::from_byte(data[0]) != Aid::StructuredField {
+    if data.first() != Some(&SF_REPLY_AID) {
         return None; // keine Structured-Field-Antwort (z.B. normale Tasteneingabe)
     }
 
@@ -568,11 +506,11 @@ fn ascii_byte_to_ebcdic(b: u8) -> u8 {
     r[0]
 }
 
-pub fn _ebcdic_to_ascii(b: u8) -> u8 {
-    let buf = [b];
-    let mut r = [0u8];
-    ebcdic::ebcdic::Ebcdic::ebcdic_to_ascii(&buf, &mut r, 1, true, true);
-    r[0]
+/// Konvertiert einen EBCDIC-Feldinhalt (z. B. vom Client gesendete Eingabe) nach ASCII/Latin-1.
+pub fn ebcdic_to_ascii_str(src: &[u8]) -> String {
+    let mut dest = vec![0u8; src.len()];
+    ebcdic::ebcdic::Ebcdic::ebcdic_to_ascii(src, &mut dest, src.len(), true, true);
+    dest.iter().map(|&b| b as char).collect()
 }
 
 #[cfg(test)]

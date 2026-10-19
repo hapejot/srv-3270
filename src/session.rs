@@ -1,0 +1,224 @@
+//! Sitzungen: Navigationsstack aus Views, Eingabe-Zuordnung und Server-Schleife.
+//!
+//! Jede TCP-Verbindung ist eine eigene Sitzung mit eigenem Stack und eigenem
+//! Datenkontext. Der geteilte Zustand `S` (z. B. ein OData-Client oder der
+//! Pfad zu einer Datenbank) wird pro Verbindung geklont.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use anyhow::{Result, anyhow};
+use async_trait::async_trait;
+use serde_json::Value;
+use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
+use tracing::{info, warn};
+
+use crate::context::Context;
+use crate::screen::{FieldId, InputField, Screen};
+use crate::tn3270::{Aid, Terminal, parse_inbound};
+
+/// Was nach einer Taste passieren soll.
+pub enum Action {
+    /// Auf dem aktuellen View bleiben.
+    Stay,
+    /// Neuen View mit Uebergabeparametern auf den Stack legen.
+    Open {
+        view: &'static str,
+        params: Value,
+    },
+    /// Zum vorherigen View zurueckkehren. Im Startview beendet es die Sitzung.
+    Back,
+    /// Sitzung beenden.
+    Exit,
+}
+
+/// Zustand einer Sitzung, den alle Views gemeinsam nutzen.
+pub struct App<S> {
+    /// Vom Server geklonter, geteilter Zustand (z. B. Client fuer einen Dienst).
+    pub shared: S,
+    /// Sitzungsdaten als JSON-Pointer-Baum (siehe [`Context`]).
+    pub ctx: Context,
+    /// Meldungszeile, wird vom View gerendert.
+    pub msg: String,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+/// Ein Bildschirm mit Darstellung und Tastenbehandlung.
+#[async_trait]
+pub trait View<S: Send + 'static>: Send {
+    /// Wird beim Oeffnen aufgerufen. Ein Fehler verhindert das Oeffnen und
+    /// wird als Meldung angezeigt.
+    async fn enter(&mut self, _app: &mut App<S>, _params: Value) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Baut den Bildschirm aus dem aktuellen Zustand.
+    fn render(&self, app: &App<S>) -> Screen;
+
+    /// Verarbeitet eine AID-Taste mit den geaenderten Eingabefeldern.
+    async fn handle(&mut self, app: &mut App<S>, aid: Aid, values: &[(FieldId, String)])
+    -> Action;
+}
+
+/// Ordnet die Antwortfelder des Terminals den Eingabefeldern zu. Die Antwort
+/// liefert die Position des Feld-Datenbeginns (Attribut + 1).
+pub fn map_fields(inputs: &[InputField], fields: &[(usize, String)]) -> Vec<(FieldId, String)> {
+    fields
+        .iter()
+        .filter_map(|(pos, text)| {
+            inputs
+                .iter()
+                .find(|f| *pos > f.pos && *pos <= f.pos + f.len as usize)
+                .map(|f| (f.id, text.trim().to_string()))
+        })
+        .collect()
+}
+
+type Factory<S> = Box<dyn Fn() -> Box<dyn View<S>> + Send + Sync>;
+
+/// Server mit registrierten Views. Jede Verbindung startet am Startview.
+pub struct Server<S> {
+    views: HashMap<&'static str, Factory<S>>,
+    start: &'static str,
+    shared: S,
+}
+
+impl<S> Server<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    /// `start` ist der Name des Startviews.
+    pub fn new(shared: S, start: &'static str) -> Self {
+        Self {
+            views: HashMap::new(),
+            start,
+            shared,
+        }
+    }
+
+    /// Registriert einen View unter `name`. Pro Oeffnen entsteht eine neue Instanz.
+    pub fn view<V>(mut self, name: &'static str, make: impl Fn() -> V + Send + Sync + 'static) -> Self
+    where
+        V: View<S> + 'static,
+    {
+        self.views.insert(
+            name,
+            Box::new(move || Box::new(make()) as Box<dyn View<S>>),
+        );
+        self
+    }
+
+    /// Nimmt Verbindungen an und bedient jede in einer eigenen Task.
+    pub async fn serve(self, addr: impl ToSocketAddrs) -> Result<()> {
+        let listener = TcpListener::bind(addr).await?;
+        info!(addr = ?listener.local_addr()?, "3270-Server laeuft");
+        let server = Arc::new(self);
+        loop {
+            let (stream, peer) = listener.accept().await?;
+            let server = server.clone();
+            tokio::spawn(async move {
+                info!(%peer, "Verbindung");
+                if let Err(e) = server.run_session(stream).await {
+                    warn!(%peer, error = %format!("{e:#}"), "Sitzung mit Fehler beendet");
+                }
+                info!(%peer, "Verbindung beendet");
+            });
+        }
+    }
+
+    fn create(&self, name: &str) -> Option<Box<dyn View<S>>> {
+        self.views.get(name).map(|make| make())
+    }
+
+    async fn run_session(&self, stream: TcpStream) -> Result<()> {
+        let mut term = Terminal::negotiate(stream).await?;
+        info!(rows = term.rows, cols = term.cols, "Terminal ausgehandelt");
+
+        let mut app = App {
+            shared: self.shared.clone(),
+            ctx: Context::default(),
+            msg: String::new(),
+            rows: term.rows,
+            cols: term.cols,
+        };
+        let mut root = self
+            .create(self.start)
+            .ok_or_else(|| anyhow!("Startview '{}' nicht registriert", self.start))?;
+        if let Err(e) = root.enter(&mut app, Value::Null).await {
+            app.msg = e;
+        }
+        let mut stack: Vec<Box<dyn View<S>>> = vec![root];
+
+        loop {
+            let Some(top) = stack.last_mut() else {
+                break;
+            };
+            let screen = top.render(&app);
+            term.write_record(&screen.to_stream().to_bytes()).await?;
+
+            let Some(rec) = term.read_record().await? else {
+                info!("Verbindung durch Client beendet");
+                break;
+            };
+            let inbound = parse_inbound(&rec);
+            let values = map_fields(&screen.inputs, &inbound.fields);
+            let action = top.handle(&mut app, inbound.aid, &values).await;
+
+            match action {
+                Action::Stay => {}
+                Action::Open { view, params } => match self.create(view) {
+                    Some(mut next) => match next.enter(&mut app, params).await {
+                        Ok(()) => stack.push(next),
+                        Err(e) => app.msg = e,
+                    },
+                    None => app.msg = format!("Unbekannter Screen: {view}"),
+                },
+                Action::Back => {
+                    if stack.len() > 1 {
+                        stack.pop();
+                    } else {
+                        break;
+                    }
+                }
+                Action::Exit => break,
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::screen::{FieldId, Screen};
+
+    fn screen_with_inputs() -> Screen {
+        let mut s = Screen::new(24, 80);
+        s.input(FieldId::Select(0), 3, 0, 1, "");
+        s.input(FieldId::Command, 21, 11, 40, "");
+        s
+    }
+
+    #[test]
+    fn response_fields_map_to_inputs_by_data_position() {
+        let s = screen_with_inputs();
+        // Select-Feld: Attribut bei 3*80+0 = 240, Daten bei 241
+        // Befehlszeile: Attribut bei 21*80+11 = 1691, Daten ab 1692
+        let fields = vec![(241, "x".to_string()), (1692, " /film ".to_string())];
+        let values = map_fields(&s.inputs, &fields);
+        assert_eq!(
+            values,
+            vec![
+                (FieldId::Select(0), "x".to_string()),
+                (FieldId::Command, "/film".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn attribute_position_is_not_an_input_value() {
+        let s = screen_with_inputs();
+        assert!(map_fields(&s.inputs, &[(240, "x".to_string())]).is_empty());
+    }
+}
