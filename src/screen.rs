@@ -114,6 +114,48 @@ fn pad(s: &str, len: usize) -> String {
     t
 }
 
+/// Teilaktualisierung eines bestehenden Bildschirms (Server Push). Sendet
+/// `Write` ohne Erase, ohne MDT-Reset und ohne Cursor: Eingabefelder, Cursor
+/// und bereits getippte Eingaben bleiben erhalten. Die Texte muessen innerhalb
+/// geschuetzter Bereiche liegen, sonst wuerden Feld-Attribute ueberschrieben.
+#[derive(Debug, Default)]
+pub struct Patch {
+    items: Vec<(u16, u16, String)>,
+}
+
+impl Patch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Schreibt `s` auf genau `len` Zeichen ab (row, col). Kuerzen bzw.
+    /// Auffuellen mit Leerzeichen, damit alte Zeichen ueberschrieben werden.
+    pub fn text(&mut self, row: u16, col: u16, s: &str, len: usize) {
+        self.items.push((row, col, pad(s, len)));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    pub fn to_stream(&self, cols: u16) -> DataStream {
+        let mut orders = Vec::with_capacity(self.items.len() * 2);
+        for (row, col, s) in &self.items {
+            orders.push(Order::SetBufferAddress {
+                row: *row,
+                col: *col,
+            });
+            orders.push(Order::Text(s.clone()));
+        }
+        DataStream {
+            command: Command::Write,
+            wcc: Wcc::NONE,
+            width: cols,
+            orders,
+        }
+    }
+}
+
 impl Screen {
     pub fn new(rows: u16, cols: u16) -> Self {
         Self {
@@ -202,6 +244,32 @@ impl Screen {
         row
     }
 
+    /// Schreibt Beschriftung/Wert-Paare untereinander ab `top`. Die Werte
+    /// stehen alle in einer Spalte, direkt nach der laengsten Beschriftung.
+    /// Ueberlange Werte werden am Zeilenende gekuerzt. Liefert die naechste
+    /// freie Zeile.
+    pub fn lines(&mut self, top: u16, pairs: &[(&str, &str)]) -> u16 {
+        let label_w = pairs
+            .iter()
+            .map(|(l, _)| l.chars().count())
+            .max()
+            .unwrap_or(0);
+        let value_col = LABEL_COL + label_w as u16 + 2;
+        let mut row = top;
+        for (label, value) in pairs {
+            self.text(
+                row,
+                LABEL_COL,
+                &pad(label, label_w),
+                FieldAttribute::normal(),
+                None,
+            );
+            self.text(row, value_col, value, FieldAttribute::normal(), None);
+            row += 1;
+        }
+        row
+    }
+
     /// Setzt den Cursor auf den Datenbeginn eines vorhandenen Eingabefeldes.
     pub fn focus(&mut self, id: FieldId) {
         if let Some(f) = self.inputs.iter().find(|f| f.id == id) {
@@ -270,6 +338,36 @@ mod tests {
     }
 
     #[test]
+    fn lines_align_values_and_clip_at_line_end() {
+        let mut s = Screen::new(24, 30);
+        let next = s.lines(2, &[("Name", "Film"), ("Laenge", &"x".repeat(50))]);
+        assert_eq!(next, 4);
+        // Werte beginnen nach der laengsten Beschriftung (6) + 2 Leerzeichen
+        let cols: Vec<u16> = s
+            .orders
+            .iter()
+            .filter_map(|o| match o {
+                Order::SetBufferAddress { col, .. } => Some(*col),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            cols,
+            vec![LABEL_COL, LABEL_COL + 8, LABEL_COL, LABEL_COL + 8]
+        );
+        // Der lange Wert wird auf die Zeilenbreite gekuerzt (30 - 10 - 1 = 19 Zeichen)
+        let long = s
+            .orders
+            .iter()
+            .filter_map(|o| match o {
+                Order::Text(t) if t.starts_with('x') => Some(t.len()),
+                _ => None,
+            })
+            .next();
+        assert_eq!(long, Some(19));
+    }
+
+    #[test]
     fn form_places_labels_and_inputs_one_row_each() {
         let mut s = Screen::new(24, 80);
         let fields = [
@@ -303,6 +401,44 @@ mod tests {
             (s.inputs[1].id, s.inputs[1].row, s.inputs[1].col),
             (FieldId::Named("b"), 4, INPUT_COL)
         );
+    }
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+
+    #[test]
+    fn patch_uses_write_without_reset_or_cursor() {
+        let mut p = Patch::new();
+        p.text(0, 60, "12:34:56", 8);
+        let s = p.to_stream(80);
+        let bytes = s.to_bytes();
+        assert_eq!(bytes[0], 0xF1, "Write-Befehl erwartet");
+        assert_eq!(bytes[1], 0x80, "WCC ohne Reset, ohne MDT-Reset");
+        assert!(
+            s.orders
+                .iter()
+                .all(|o| matches!(o, Order::SetBufferAddress { .. } | Order::Text(_))),
+            "nur SBA und Text erlaubt (kein SF, kein IC)"
+        );
+    }
+
+    #[test]
+    fn patch_pads_to_length_so_old_chars_are_overwritten() {
+        let mut p = Patch::new();
+        p.text(0, 0, "ab", 4);
+        p.text(1, 0, "abcdef", 3);
+        let texts: Vec<String> = p
+            .to_stream(80)
+            .orders
+            .iter()
+            .filter_map(|o| match o {
+                Order::Text(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["ab  ".to_string(), "abc".to_string()]);
     }
 }
 

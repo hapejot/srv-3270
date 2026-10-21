@@ -6,26 +6,32 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
+use tokio::time::{Instant, MissedTickBehavior, interval_at};
 use tracing::{info, warn};
 
 use crate::context::Context;
-use crate::screen::{FieldId, InputField, Screen};
+use crate::screen::{FieldId, InputField, Patch, Screen};
 use crate::tn3270::{Aid, Terminal, parse_inbound};
+
+/// Was die Schleife aufweckt: eine Eingabe oder der Timer eines Views.
+enum Wake {
+    /// Eingabe-Record, `None` = Verbindung geschlossen.
+    Input(Option<Vec<u8>>),
+    Tick,
+}
 
 /// Was nach einer Taste passieren soll.
 pub enum Action {
     /// Auf dem aktuellen View bleiben.
     Stay,
     /// Neuen View mit Uebergabeparametern auf den Stack legen.
-    Open {
-        view: &'static str,
-        params: Value,
-    },
+    Open { view: &'static str, params: Value },
     /// Zum vorherigen View zurueckkehren. Im Startview beendet es die Sitzung.
     Back,
     /// Sitzung beenden.
@@ -57,8 +63,19 @@ pub trait View<S: Send + 'static>: Send {
     fn render(&self, app: &App<S>) -> Screen;
 
     /// Verarbeitet eine AID-Taste mit den geaenderten Eingabefeldern.
-    async fn handle(&mut self, app: &mut App<S>, aid: Aid, values: &[(FieldId, String)])
-    -> Action;
+    async fn handle(&mut self, app: &mut App<S>, aid: Aid, values: &[(FieldId, String)]) -> Action;
+
+    /// Intervall fuer unangeforderte Aktualisierung (Server Push). `None` =
+    /// der View wird nur nach Eingaben neu gezeichnet.
+    fn refresh_interval(&self) -> Option<Duration> {
+        None
+    }
+
+    /// Wird im Intervall von [`View::refresh_interval`] aufgerufen. Liefert
+    /// eine Teilaktualisierung oder `None`, wenn nichts zu tun ist.
+    fn refresh(&self, _app: &App<S>) -> Option<Patch> {
+        None
+    }
 }
 
 /// Ordnet die Antwortfelder des Terminals den Eingabefeldern zu. Die Antwort
@@ -76,6 +93,31 @@ pub fn map_fields(inputs: &[InputField], fields: &[(usize, String)]) -> Vec<(Fie
 }
 
 type Factory<S> = Box<dyn Fn() -> Box<dyn View<S>> + Send + Sync>;
+
+/// Ermoeglicht `Server::view(name, || -> Box<dyn View<S>> { ... })` ohne
+/// eigenen Newtype. Alle Methoden werden an den inneren View weitergereicht.
+#[async_trait]
+impl<S: Send + 'static> View<S> for Box<dyn View<S>> {
+    async fn enter(&mut self, app: &mut App<S>, params: Value) -> Result<(), String> {
+        (**self).enter(app, params).await
+    }
+
+    fn render(&self, app: &App<S>) -> Screen {
+        (**self).render(app)
+    }
+
+    async fn handle(&mut self, app: &mut App<S>, aid: Aid, values: &[(FieldId, String)]) -> Action {
+        (**self).handle(app, aid, values).await
+    }
+
+    fn refresh_interval(&self) -> Option<Duration> {
+        (**self).refresh_interval()
+    }
+
+    fn refresh(&self, app: &App<S>) -> Option<Patch> {
+        (**self).refresh(app)
+    }
+}
 
 /// Server mit registrierten Views. Jede Verbindung startet am Startview.
 pub struct Server<S> {
@@ -98,14 +140,16 @@ where
     }
 
     /// Registriert einen View unter `name`. Pro Oeffnen entsteht eine neue Instanz.
-    pub fn view<V>(mut self, name: &'static str, make: impl Fn() -> V + Send + Sync + 'static) -> Self
+    pub fn view<V>(
+        mut self,
+        name: &'static str,
+        make: impl Fn() -> V + Send + Sync + 'static,
+    ) -> Self
     where
         V: View<S> + 'static,
     {
-        self.views.insert(
-            name,
-            Box::new(move || Box::new(make()) as Box<dyn View<S>>),
-        );
+        self.views
+            .insert(name, Box::new(move || Box::new(make()) as Box<dyn View<S>>));
         self
     }
 
@@ -154,10 +198,37 @@ where
             let Some(top) = stack.last_mut() else {
                 break;
             };
+            // Vollstaendiger Neuaufbau (Erase/Write) nach jedem Ereignis.
             let screen = top.render(&app);
             term.write_record(&screen.to_stream().to_bytes()).await?;
 
-            let Some(rec) = term.read_record().await? else {
+            let mut ticker = top.refresh_interval().map(|period| {
+                let mut t = interval_at(Instant::now() + period, period);
+                t.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                t
+            });
+
+            // Auf Eingabe oder Timer warten. Teilaktualisierungen werden direkt
+            // gesendet, ohne den Benutzer zu unterbrechen.
+            let rec = loop {
+                let wake = match ticker.as_mut() {
+                    Some(t) => tokio::select! {
+                        rec = term.read_record() => Wake::Input(rec?),
+                        _ = t.tick() => Wake::Tick,
+                    },
+                    None => Wake::Input(term.read_record().await?),
+                };
+                match wake {
+                    Wake::Input(rec) => break rec,
+                    Wake::Tick => {
+                        if let Some(patch) = top.refresh(&app).filter(|p| !p.is_empty()) {
+                            term.write_record(&patch.to_stream(term.cols).to_bytes())
+                                .await?;
+                        }
+                    }
+                }
+            };
+            let Some(rec) = rec else {
                 info!("Verbindung durch Client beendet");
                 break;
             };

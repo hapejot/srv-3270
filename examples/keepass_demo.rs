@@ -21,8 +21,8 @@ use keepass::{Database, DatabaseKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use srv_3270::{
-    Action, Aid, App, Color, Field, FieldAttribute, FieldId, FieldKind, Screen, Server, View, clip,
-    data_marker,
+    Action, Aid, App, Color, Field, FieldAttribute, FieldId, FieldKind, Patch, Screen, Server,
+    View, clip, data_marker,
 };
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -225,8 +225,31 @@ impl List {
     }
 }
 
+/// Uhrzeit rechts in der Titelzeile: Feldattribut bei `CLOCK_COL`, Daten ab
+/// `CLOCK_COL + 1`. Teil-Updates muessen daher bei `CLOCK_COL + 1` beginnen.
+const CLOCK_LEN: usize = 8; // "HH:MM:SS"
+
+fn clock_col(cols: u16) -> u16 {
+    cols.saturating_sub(CLOCK_LEN as u16 + 2)
+}
+
+fn now_hms() -> String {
+    chrono::Local::now().format("%H:%M:%S").to_string()
+}
+
 #[async_trait]
 impl View<Shared> for List {
+    /// Uhrzeit jede Sekunde per Server Push, ohne Tastendruck.
+    fn refresh_interval(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(1))
+    }
+
+    fn refresh(&self, app: &App<Shared>) -> Option<Patch> {
+        let mut p = Patch::new();
+        p.text(0, clock_col(app.cols) + 1, &now_hms(), CLOCK_LEN);
+        Some(p)
+    }
+
     fn render(&self, app: &App<Shared>) -> Screen {
         let all = entries(app);
         let f = filter(app);
@@ -245,6 +268,13 @@ impl View<Shared> for List {
             ),
             &app.msg,
             "S+Enter=Oeffnen  /Text=Filter  X=Filter weg  PF7/8=Seite  PF3=Abmelden",
+        );
+        s.text(
+            0,
+            clock_col(app.cols),
+            &now_hms(),
+            FieldAttribute::protected_intensified(),
+            Some(Color::Blue),
         );
         s.text(
             1,

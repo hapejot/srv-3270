@@ -33,7 +33,7 @@ const TTYPE_SEND: u8 = 0x01;
 
 /// Eine Telnet-Einheit aus dem Byte-Strom.
 enum Event {
-    Data(u8),
+    Data,
     Eor,
     Opt(u8, u8),
     Sub(Vec<u8>),
@@ -43,11 +43,11 @@ enum Event {
 async fn read_event(io: &mut BufReader<TcpStream>) -> std::io::Result<Event> {
     let b = io.read_u8().await?;
     if b != IAC {
-        return Ok(Event::Data(b));
+        return Ok(Event::Data);
     }
     let c = io.read_u8().await?;
     Ok(match c {
-        IAC => Event::Data(IAC),
+        IAC => Event::Data,
         EOR => Event::Eor,
         WILL | WONT | DO | DONT => Event::Opt(c, io.read_u8().await?),
         SB => {
@@ -72,8 +72,78 @@ async fn read_event(io: &mut BufReader<TcpStream>) -> std::io::Result<Event> {
     })
 }
 
+/// Zustand des Telnet-Parsers. Liegt im Terminal, damit `read_record` jederzeit
+/// abgebrochen werden kann (z. B. in `select!`), ohne Bytes zu verlieren.
+#[derive(Default)]
+enum PState {
+    #[default]
+    Data,
+    Iac,
+    Verb(u8),
+    Sb(Vec<u8>),
+    SbIac(Vec<u8>),
+}
+
+#[derive(Default)]
+struct Parser {
+    state: PState,
+    rec: Vec<u8>,
+}
+
+impl Parser {
+    /// Verarbeitet ein Byte. Liefert ein Ereignis, sobald eines vollstaendig ist.
+    fn feed(&mut self, b: u8) -> Option<Event> {
+        match std::mem::take(&mut self.state) {
+            PState::Data => {
+                if b == IAC {
+                    self.state = PState::Iac;
+                } else {
+                    self.rec.push(b);
+                }
+                None
+            }
+            PState::Iac => match b {
+                IAC => {
+                    self.rec.push(IAC);
+                    None
+                }
+                EOR => Some(Event::Eor),
+                WILL | WONT | DO | DONT => {
+                    self.state = PState::Verb(b);
+                    None
+                }
+                SB => {
+                    self.state = PState::Sb(Vec::new());
+                    None
+                }
+                _ => None,
+            },
+            PState::Verb(verb) => Some(Event::Opt(verb, b)),
+            PState::Sb(mut payload) => {
+                if b == IAC {
+                    self.state = PState::SbIac(payload);
+                } else {
+                    payload.push(b);
+                    self.state = PState::Sb(payload);
+                }
+                None
+            }
+            PState::SbIac(mut payload) => match b {
+                SE => None,
+                IAC => {
+                    payload.push(IAC);
+                    self.state = PState::Sb(payload);
+                    None
+                }
+                _ => None,
+            },
+        }
+    }
+}
+
 pub struct Terminal {
     io: BufReader<TcpStream>,
+    parser: Parser,
     pub rows: u16,
     pub cols: u16,
 }
@@ -99,7 +169,12 @@ impl Terminal {
         let _ = timeout(Duration::from_secs(5), negotiate_inner(&mut io, &mut st)).await;
         let term_type = st.term.unwrap_or_else(|| "IBM-3278-2".to_string());
         let (rows, cols) = dimensions_for(&term_type);
-        let mut term = Self { io, rows, cols };
+        let mut term = Self {
+            io,
+            parser: Parser::default(),
+            rows,
+            cols,
+        };
         term.detect_size().await?;
         Ok(term)
     }
@@ -129,22 +204,24 @@ impl Terminal {
     }
 
     /// Liest ein Record bis IAC EOR. `None` = Verbindung geschlossen.
+    ///
+    /// Cancel-safe: Der Parserzustand liegt im Terminal, jedes Byte wird genau
+    /// einmal konsumiert. Die Future darf also jederzeit verworfen werden.
     pub async fn read_record(&mut self) -> Result<Option<Vec<u8>>> {
-        let mut rec = Vec::new();
         loop {
-            match read_event(&mut self.io).await {
-                Ok(Event::Data(b)) => rec.push(b),
-                Ok(Event::Eor) => return Ok(Some(rec)),
-                Ok(Event::Opt(verb, opt)) => {
-                    // Akzeptierte Optionen nicht beantworten, unbekannte ablehnen.
-                    if !matches!(opt, OPT_BINARY | OPT_TTYPE | OPT_EOR) {
-                        let reply = if verb == WILL { DONT } else { WONT };
-                        self.io.get_mut().write_all(&[IAC, reply, opt]).await?;
-                    }
-                }
-                Ok(_) => {}
+            let b = match self.io.read_u8().await {
+                Ok(b) => b,
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
                 Err(e) => return Err(e.into()),
+            };
+            match self.parser.feed(b) {
+                Some(Event::Eor) => return Ok(Some(std::mem::take(&mut self.parser.rec))),
+                // Akzeptierte Optionen nicht beantworten, unbekannte ablehnen.
+                Some(Event::Opt(verb, opt)) if !matches!(opt, OPT_BINARY | OPT_TTYPE | OPT_EOR) => {
+                    let reply = if verb == WILL { DONT } else { WONT };
+                    self.io.get_mut().write_all(&[IAC, reply, opt]).await?;
+                }
+                _ => {}
             }
         }
     }
@@ -232,6 +309,14 @@ pub enum Aid {
     Other,
 }
 
+impl Aid {
+    /// Liefert die Taste PF`n` fuer `n` in 1..=24, sonst `None`.
+    /// `Aid::Pf(n)` bezeichnet dieselbe Taste (PF1..PF24).
+    pub fn from_pf(n: u8) -> Option<Aid> {
+        (1..=24).contains(&n).then_some(Aid::Pf(n))
+    }
+}
+
 pub fn aid_from(b: u8) -> Aid {
     match b {
         0x7D => Aid::Enter,
@@ -258,7 +343,10 @@ pub struct Inbound {
 
 pub fn parse_inbound(rec: &[u8]) -> Inbound {
     if rec.is_empty() {
-        return Inbound { aid: Aid::Other, fields: vec![] };
+        return Inbound {
+            aid: Aid::Other,
+            fields: vec![],
+        };
     }
     let aid = aid_from(rec[0]);
     let mut fields = Vec::new();
@@ -293,6 +381,47 @@ pub fn ebcdic_to_ascii(b: u8) -> char {
 mod tests {
     use super::*;
 
+    /// Fuettert Bytes in den Parser und sammelt abgeschlossene Records.
+    fn feed_all(p: &mut Parser, bytes: &[u8]) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        for &b in bytes {
+            if let Some(Event::Eor) = p.feed(b) {
+                out.push(std::mem::take(&mut p.rec));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn aid_from_pf_accepts_only_1_to_24() {
+        assert_eq!(Aid::from_pf(1), Some(Aid::Pf(1)));
+        assert_eq!(Aid::from_pf(24), Some(Aid::Pf(24)));
+        assert_eq!(Aid::from_pf(0), None);
+        assert_eq!(Aid::from_pf(25), None);
+    }
+
+    #[test]
+    fn parser_splits_records_and_unescapes_iac() {
+        let mut p = Parser::default();
+        let recs = feed_all(
+            &mut Parser::default(),
+            &[1, IAC, IAC, 2, IAC, EOR, 3, IAC, EOR],
+        );
+        assert_eq!(recs, vec![vec![1, IAC, 2], vec![3]]);
+        // Auch wenn ein Record in mehreren Teilen ankommt, bleibt der Zustand erhalten.
+        assert!(feed_all(&mut p, &[7, 8]).is_empty());
+        assert_eq!(feed_all(&mut p, &[IAC, EOR]), vec![vec![7, 8]]);
+    }
+
+    #[test]
+    fn parser_reports_options_without_data() {
+        let mut p = Parser::default();
+        assert!(p.feed(IAC).is_none());
+        assert!(p.feed(WILL).is_none());
+        assert!(matches!(p.feed(0x19), Some(Event::Opt(WILL, 0x19))));
+        assert!(p.rec.is_empty());
+    }
+
     #[test]
     fn address_12bit_roundtrip() {
         // 80 (Zeile 1, Spalte 0) bzw. 1919 werden mit der Tabelle kodiert.
@@ -321,7 +450,13 @@ mod tests {
     fn parse_enter_with_one_field() {
         // AID Enter, Cursor 0, dann SBA auf Position 80 mit "AB"
         let rec = [
-            0x7D, ADDR_TABLE[0], ADDR_TABLE[0], ORDER_SBA, ADDR_TABLE[1], ADDR_TABLE[16], 0xC1,
+            0x7D,
+            ADDR_TABLE[0],
+            ADDR_TABLE[0],
+            ORDER_SBA,
+            ADDR_TABLE[1],
+            ADDR_TABLE[16],
+            0xC1,
             0xC2,
         ];
         let inb = parse_inbound(&rec);
