@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let bind = env_or("VIDEO3270_BIND", "0.0.0.0:3270");
+    let bind = env_or("VIDEO3270_BIND", "0.0.0.0:3271");
     let odata = odata::Odata::new(
         env_or("ODATA_URL", "http://nuc:3035/Service"),
         env_or("ODATA_USER", "3270"),
