@@ -62,9 +62,9 @@ s.text(23, 0, "Passwort falsch", FieldAttribute::protected_intensified(), Some(C
 
 ## Checkliste für neue Masken
 
-- [ ] Titel blau, intensiviert
-- [ ] Labels blau, Werte grün
-- [ ] Alle Eingabefelder über `input` / `input_with` (türkis, unterstrichen)
-- [ ] Meldungszeile gelb (Hinweis) oder rot (Fehler)
-- [ ] Befehlszeile und Tastenhinweise blau
-- [ ] Keine weiteren Farben ohne Begründung
+- Titel blau, intensiviert
+- Labels blau, Werte grün
+- Alle Eingabefelder über `input` / `input_with` (türkis, unterstrichen)
+- Meldungszeile gelb (Hinweis) oder rot (Fehler)
+- Befehlszeile und Tastenhinweise blau
+- Keine weiteren Farben ohne Begründung
