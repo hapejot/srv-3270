@@ -36,6 +36,9 @@ pub enum Action {
     Back,
     /// Sitzung beenden.
     Exit,
+    /// Abschlussmeldung auf leerem Bildschirm zeigen, dann sofort beenden
+    /// (ohne auf eine Taste zu warten).
+    Farewell(String),
 }
 
 /// Zustand einer Sitzung, den alle Views gemeinsam nutzen.
@@ -256,6 +259,12 @@ where
                     // Bildschirm leeren, damit der Client keine alte Maske stehen laesst.
                     let blank = Screen::new(term.rows, term.cols).to_stream().to_bytes();
                     term.write_record(&blank).await.ok();
+                    break;
+                }
+                Action::Farewell(msg) => {
+                    let mut s = Screen::new(term.rows, term.cols);
+                    s.text(3, 4, &msg, crate::FieldAttribute::normal(), Some(crate::Color::Blue));
+                    term.write_record(&s.to_stream().to_bytes()).await.ok();
                     break;
                 }
             }
