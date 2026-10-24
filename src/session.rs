@@ -9,9 +9,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+#[cfg(feature = "tls")]
+use anyhow::Context as _;
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
+#[cfg(feature = "tls")]
+use tokio_rustls::TlsAcceptor;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
 use tracing::{info, warn};
 
@@ -127,6 +131,8 @@ pub struct Server<S> {
     views: HashMap<&'static str, Factory<S>>,
     start: &'static str,
     shared: S,
+    #[cfg(feature = "tls")]
+    tls: Option<TlsAcceptor>,
 }
 
 impl<S> Server<S>
@@ -139,7 +145,21 @@ where
             views: HashMap::new(),
             start,
             shared,
+            #[cfg(feature = "tls")]
+            tls: None,
         }
+    }
+
+    /// Schaltet TLS ein: Zertifikatskette und Schluessel als PEM-Dateien.
+    /// Ohne diesen Aufruf laeuft der Server im Klartext.
+    #[cfg(feature = "tls")]
+    pub fn with_tls(
+        mut self,
+        cert: impl AsRef<std::path::Path>,
+        key: impl AsRef<std::path::Path>,
+    ) -> Result<Self> {
+        self.tls = Some(crate::tls::acceptor(cert.as_ref(), key.as_ref())?);
+        Ok(self)
     }
 
     /// Registriert einen View unter `name`. Pro Oeffnen entsteht eine neue Instanz.
@@ -166,7 +186,7 @@ where
             let server = server.clone();
             tokio::spawn(async move {
                 info!(%peer, "Verbindung");
-                if let Err(e) = server.run_session(stream).await {
+                if let Err(e) = server.accept_and_run(stream).await {
                     warn!(%peer, error = %format!("{e:#}"), "Sitzung mit Fehler beendet");
                 }
                 info!(%peer, "Verbindung beendet");
@@ -178,7 +198,17 @@ where
         self.views.get(name).map(|make| make())
     }
 
-    async fn run_session(&self, stream: TcpStream) -> Result<()> {
+    /// Baut bei TLS zuerst den verschluesselten Kanal auf, danach die Sitzung.
+    async fn accept_and_run(&self, stream: TcpStream) -> Result<()> {
+        #[cfg(feature = "tls")]
+        if let Some(acceptor) = &self.tls {
+            let tls = acceptor.accept(stream).await.context("TLS-Handshake")?;
+            return self.run_session(tls).await;
+        }
+        self.run_session(stream).await
+    }
+
+    async fn run_session<T: crate::tn3270::Transport + 'static>(&self, stream: T) -> Result<()> {
         let mut term = Terminal::negotiate(stream).await?;
         info!(rows = term.rows, cols = term.cols, "Terminal ausgehandelt");
 

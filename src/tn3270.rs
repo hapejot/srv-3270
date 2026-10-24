@@ -10,7 +10,12 @@ use crate::datastream::{
     parse_implicit_partition_reply,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite};
+
+/// Transport einer Sitzung: TCP oder TLS ueber TCP.
+pub trait Transport: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Transport for T {}
+pub type BoxedIo = Box<dyn Transport>;
 use tokio::time::timeout;
 
 /// Wartezeit auf die Query Reply. Terminals ohne Query-Unterstützung antworten nicht.
@@ -40,7 +45,7 @@ enum Event {
     Other,
 }
 
-async fn read_event(io: &mut BufReader<TcpStream>) -> std::io::Result<Event> {
+async fn read_event(io: &mut BufReader<BoxedIo>) -> std::io::Result<Event> {
     let b = io.read_u8().await?;
     if b != IAC {
         return Ok(Event::Data);
@@ -142,7 +147,7 @@ impl Parser {
 }
 
 pub struct Terminal {
-    io: BufReader<TcpStream>,
+    io: BufReader<BoxedIo>,
     parser: Parser,
     pub rows: u16,
     pub cols: u16,
@@ -156,8 +161,9 @@ struct NegState {
 }
 
 impl Terminal {
-    pub async fn negotiate(stream: TcpStream) -> Result<Self> {
-        let mut io = BufReader::new(stream);
+    /// Startet die Telnet-Verhandlung auf einem beliebigen Transport (TCP oder TLS).
+    pub async fn negotiate<T: Transport + 'static>(stream: T) -> Result<Self> {
+        let mut io = BufReader::new(Box::new(stream) as BoxedIo);
         io.get_mut()
             .write_all(&[
                 IAC, DO, OPT_TTYPE, IAC, WILL, OPT_EOR, IAC, DO, OPT_EOR, IAC, WILL, OPT_BINARY,
@@ -243,7 +249,7 @@ impl Terminal {
     }
 }
 
-async fn negotiate_inner(io: &mut BufReader<TcpStream>, st: &mut NegState) -> Result<()> {
+async fn negotiate_inner(io: &mut BufReader<BoxedIo>, st: &mut NegState) -> Result<()> {
     loop {
         if st.term.is_some() && st.eor && st.binary {
             return Ok(());

@@ -13,6 +13,8 @@ mod datastream;
 pub mod screen;
 pub mod session;
 pub mod tn3270;
+#[cfg(feature = "tls")]
+pub mod tls;
 
 pub use context::Context;
 pub use datastream::{
