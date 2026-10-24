@@ -17,11 +17,12 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # TLS (optional, Feature "tls")
 rustls-pemfile = { version = "2", optional = true }
+sha2 = { version = "0.10", optional = true }
 tokio-rustls = { version = "0.26", optional = true }
 
 [features]
 default = []
-tls = ["dep:tokio-rustls", "dep:rustls-pemfile"]
+tls = ["dep:tokio-rustls", "dep:rustls-pemfile", "dep:sha2"]
 
 [dev-dependencies]
 keepass = { version = "0.15", features = ["save_kdbx4"] }

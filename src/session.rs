@@ -220,6 +220,17 @@ where
         #[cfg(feature = "tls")]
         if let Some(acceptor) = &self.tls {
             let tls = acceptor.accept(stream).await.context("TLS-Handshake")?;
+            // Client-Zertifikat protokollieren (Fingerprint), damit man sieht, wer verbindet.
+            let (_, conn) = tls.get_ref();
+            if let Some(cert) = conn.peer_certificates().and_then(|c| c.first()) {
+                use sha2::{Digest, Sha256};
+                let fp: String = Sha256::digest(cert.as_ref())
+                    .iter()
+                    .map(|b| format!("{b:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(":");
+                info!(client_cert_sha256 = %fp, "Client-Zertifikat");
+            }
             return self.run_session(tls).await;
         }
         self.run_session(stream).await
