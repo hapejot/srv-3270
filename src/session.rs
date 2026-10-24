@@ -252,7 +252,12 @@ where
                         break;
                     }
                 }
-                Action::Exit => break,
+                Action::Exit => {
+                    // Bildschirm leeren, damit der Client keine alte Maske stehen laesst.
+                    let blank = Screen::new(term.rows, term.cols).to_stream().to_bytes();
+                    term.write_record(&blank).await.ok();
+                    break;
+                }
             }
         }
         Ok(())
