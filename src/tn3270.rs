@@ -343,6 +343,8 @@ pub fn aid_from(b: u8) -> Aid {
 #[derive(Debug)]
 pub struct Inbound {
     pub aid: Aid,
+    /// Cursorposition beim Absenden (Buffer-Adresse), falls mitgeliefert.
+    pub cursor: Option<usize>,
     /// (Buffer-Position des Feldbeginns, Text)
     pub fields: Vec<(usize, String)>,
 }
@@ -351,10 +353,12 @@ pub fn parse_inbound(rec: &[u8]) -> Inbound {
     if rec.is_empty() {
         return Inbound {
             aid: Aid::Other,
+            cursor: None,
             fields: vec![],
         };
     }
     let aid = aid_from(rec[0]);
+    let cursor = (rec.len() >= 3).then(|| decode_address(rec[1], rec[2]));
     let mut fields = Vec::new();
     let mut i = 3.min(rec.len());
     while i < rec.len() {
@@ -372,7 +376,7 @@ pub fn parse_inbound(rec: &[u8]) -> Inbound {
             i += 1;
         }
     }
-    Inbound { aid, fields }
+    Inbound { aid, cursor, fields }
 }
 
 // ---------------------------------------------------------------------
@@ -527,5 +531,18 @@ mod tests {
     async fn negotiate_falls_back_to_terminal_type() {
         let term = negotiate_with(false).await;
         assert_eq!((term.rows, term.cols), (24, 80));
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    #[test]
+    fn cursor_address_is_parsed() {
+        // AID (Enter=0x7D), Cursor 12-Bit auf Position 80 (Zeile 1, Spalte 0)
+        let rec = [0x7D, ADDR_TABLE[1], ADDR_TABLE[16], ORDER_SBA];
+        let inb = parse_inbound(&rec);
+        assert_eq!(inb.cursor, Some(80));
     }
 }

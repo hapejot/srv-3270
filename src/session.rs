@@ -99,6 +99,14 @@ pub fn map_fields(inputs: &[InputField], fields: &[(usize, String)]) -> Vec<(Fie
         .collect()
 }
 
+/// Eingabefeld, dessen Datenbereich die Buffer-Position `pos` enthaelt.
+pub fn field_at(inputs: &[InputField], pos: usize) -> Option<FieldId> {
+    inputs
+        .iter()
+        .find(|f| pos > f.pos && pos <= f.pos + f.len as usize)
+        .map(|f| f.id)
+}
+
 type Factory<S> = Box<dyn Fn() -> Box<dyn View<S>> + Send + Sync>;
 
 /// Ermoeglicht `Server::view(name, || -> Box<dyn View<S>> { ... })` ohne
@@ -294,7 +302,13 @@ where
                 break;
             };
             let inbound = parse_inbound(&rec);
-            let values = map_fields(&screen.inputs, &inbound.fields);
+            let mut values = map_fields(&screen.inputs, &inbound.fields);
+            // F2 leert das Eingabefeld unter dem Cursor (Wert wird als leer uebergeben).
+            if inbound.aid == Aid::Pf(2) {
+                if let Some(id) = inbound.cursor.and_then(|c| field_at(&screen.inputs, c)) {
+                    values.push((id, String::new()));
+                }
+            }
             let action = top.handle(&mut app, inbound.aid, &values).await;
 
             match action {
