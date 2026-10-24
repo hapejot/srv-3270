@@ -158,7 +158,24 @@ where
         cert: impl AsRef<std::path::Path>,
         key: impl AsRef<std::path::Path>,
     ) -> Result<Self> {
-        self.tls = Some(crate::tls::acceptor(cert.as_ref(), key.as_ref())?);
+        self.tls = Some(crate::tls::acceptor(cert.as_ref(), key.as_ref(), None)?);
+        Ok(self)
+    }
+
+    /// Wie [`Server::with_tls`], verlangt zusaetzlich ein Client-Zertifikat
+    /// von der CA in `client_ca`.
+    #[cfg(feature = "tls")]
+    pub fn with_tls_client_auth(
+        mut self,
+        cert: impl AsRef<std::path::Path>,
+        key: impl AsRef<std::path::Path>,
+        client_ca: impl AsRef<std::path::Path>,
+    ) -> Result<Self> {
+        self.tls = Some(crate::tls::acceptor(
+            cert.as_ref(),
+            key.as_ref(),
+            Some(client_ca.as_ref()),
+        )?);
         Ok(self)
     }
 
